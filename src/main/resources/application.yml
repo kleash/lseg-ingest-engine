@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: lseg-ingest
+  main:
+    web-application-type: servlet
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/db.changelog-master.xml
+    url: jdbc:mariadb://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:lseg}
+    user: ${DB_OWNER_USER:owner}
+    password: ${DB_OWNER_PASSWORD:ownerpw}
+
+ingest:
+  inputDir: ${INGEST_DIR:/data}
+  archiveDir: ${ARCHIVE_DIR:/archive}
+  businessDate: ${INGEST_DATE:20260425}
+  skipPatterns:
+    - "*.note.txt.zip"
+    - "Reference-INT-EQUI-*"
+  ricCaretFilter: true
+  threads:
+    intPerTable: 10
+    deltaTargetsParallel: 3
+  batch:
+    upsertSize: 5000
+    deleteSize: 5000
+  resilience:
+    fallbackOnBatchFail: true
+    maxSkippedRowsPerFile: 1000
+
+db:
+  runtime:
+    url: jdbc:mariadb://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:lseg}?rewriteBatchedStatements=true&useServerPrepStmts=false&cachePrepStmts=true&useLocalSessionState=true
+    user: ${DB_USER:ingest}
+    password: ${DB_PASSWORD:ingestpw}
+    pool:
+      maxSize: 40
+      minIdle: 10
+      connectionTimeoutMs: 30000
+
+logging:
+  level:
+    root: INFO
+    com.lseg.ingest: INFO

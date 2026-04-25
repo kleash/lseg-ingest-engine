@@ -1,0 +1,17 @@
+target/
+*.class
+*.log
+.DS_Store
+.idea/
+*.iml
+*.swp
+
+# Verification and Testing scripts
+reconcile_ingestion.py
+verify_results.sql
+verify_metrics.sql
+sample_data.sql
+
+# Data directories
+input/
+archive/

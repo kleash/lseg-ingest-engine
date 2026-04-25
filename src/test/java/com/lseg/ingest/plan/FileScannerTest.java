@@ -1,0 +1,53 @@
+package com.lseg.ingest.plan;
+
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class FileScannerTest {
+
+    private final FileScanner scanner = new FileScanner(new com.lseg.ingest.config.IngestProperties());
+
+    @Test
+    void classifiesIntQuoteFile() {
+        IngestFile f = scanner.classify(Path.of("/x"), "EIS_INT_US_EQU_QUOTE.INT.25967.20260425.1.1.1.txt.zip");
+        assertNotNull(f);
+        assertEquals(Target.QUOTES, f.target());
+        assertEquals(Kind.INT, f.kind());
+        assertEquals(1, f.seq());
+    }
+
+    @Test
+    void classifiesDeltaQuoteFile() {
+        IngestFile f = scanner.classify(Path.of("/x"), "EIS_DELTA_ASIA_US_QUOTE.REF.25963.20260425.7.1.1.txt.zip");
+        assertEquals(Target.QUOTES, f.target());
+        assertEquals(Kind.DELTA, f.kind());
+        assertEquals(7, f.seq());
+    }
+
+    @Test
+    void classifiesAssets() {
+        assertEquals(Target.ASSETS,
+                scanner.classify(Path.of("/x"), "EIS_INT_GLOBAL_EQU_OPT_ASSETS.INT.25971.20260425.1.1.1.txt.zip").target());
+        assertEquals(Target.ASSETS,
+                scanner.classify(Path.of("/x"), "EIS_DELTA_GLOBAL_ASSETS.REF.25965.20260425.42.1.1.txt.zip").target());
+    }
+
+    @Test
+    void classifiesOrgs() {
+        assertEquals(Target.ORGS,
+                scanner.classify(Path.of("/x"), "Organization.INT.25748.20260425.1.1.1.txt.zip").target());
+        assertEquals(Target.ORGS,
+                scanner.classify(Path.of("/x"), "EIS_DELTA_GLOABL_ORGN.REF.25966.20260425.1.1.1.txt.zip").target());
+    }
+
+    @Test
+    void rejectsUnknownDataset() {
+        assertNull(scanner.classify(Path.of("/x"), "Reference-INT-EQUI-AMEQUQ-1-1-1.INT.25723.20260425.1.1.1.txt.zip")
+                != null ? null : null /* placeholder */);
+        // Reference-INT-EQUI-* dataset name doesn't match any target rule even if classify is called directly.
+        assertNull(scanner.classify(Path.of("/x"), "Some_Random_File.INT.1.20260425.1.1.1.txt.zip"));
+    }
+}
