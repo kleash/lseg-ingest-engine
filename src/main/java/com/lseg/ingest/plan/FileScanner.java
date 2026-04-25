@@ -83,7 +83,7 @@ public class FileScanner {
     static Target mapTarget(String dataset) {
         // ORGS
         if (dataset.equals("Organization")) return Target.ORGS;
-        if (dataset.equals("EIS_DELTA_GLOABL_ORGN")) return Target.ORGS;
+        if (dataset.contains("GLOBAL_ORGN") || dataset.contains("GLOABL_ORGN")) return Target.ORGS;
         // ASSETS
         if (dataset.startsWith("EIS_INT_") && dataset.endsWith("_ASSETS")) return Target.ASSETS;
         if (dataset.equals("EIS_DELTA_GLOBAL_ASSETS")) return Target.ASSETS;
