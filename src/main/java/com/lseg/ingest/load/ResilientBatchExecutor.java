@@ -1,5 +1,6 @@
 package com.lseg.ingest.load;
 
+import com.lseg.ingest.config.IngestProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,32 +14,43 @@ import java.util.List;
 /**
  * Builds a PreparedStatement, batches rows, and on batch failure re-runs the same N rows individually
  * so a single bad row does not abort the file. Caller controls flush timing.
+ *
+ * Retries transient errors (deadlocks, etc.) at both the batch level and the individual row level
+ * before giving up or marking as skipped.
  */
 public class ResilientBatchExecutor implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(ResilientBatchExecutor.class);
 
+    @FunctionalInterface
+    public interface RowBinder {
+        void bind(PreparedStatement ps, PendingRow row) throws SQLException;
+    }
+
     private final Connection conn;
     private final PreparedStatement ps;
-    private final List<TargetSchema.Column> cols;
+    private final RowBinder binder;
     private final int flushAt;
     private final List<PendingRow> buffered = new ArrayList<>();
     private final String fileName;
+    private final IngestProperties.Retry retryCfg;
 
     private int succeeded;
     private int skipped;
 
-    public ResilientBatchExecutor(Connection conn, String sql, List<TargetSchema.Column> cols, int flushAt, String fileName) throws SQLException {
+    public ResilientBatchExecutor(Connection conn, String sql, RowBinder binder, int flushAt, 
+                                  String fileName, IngestProperties.Retry retryCfg) throws SQLException {
         this.conn = conn;
         this.ps = conn.prepareStatement(sql);
-        this.cols = cols;
+        this.binder = binder;
         this.flushAt = flushAt;
         this.fileName = fileName;
+        this.retryCfg = retryCfg;
     }
 
-    /** Bind one row from raw header-aligned String values. The values array length must equal cols.size(). */
+    /** Bind one row from raw header-aligned String values. */
     public void add(PendingRow row) throws SQLException {
-        bind(row);
+        binder.bind(ps, row);
         ps.addBatch();
         buffered.add(row);
         if (buffered.size() >= flushAt) flush();
@@ -47,18 +59,30 @@ public class ResilientBatchExecutor implements AutoCloseable {
     public void flush() throws SQLException {
         if (buffered.isEmpty()) return;
         try {
-            ps.executeBatch();
+            SqlRetry.withRetry(retryCfg, "batch:" + fileName, () -> {
+                ps.executeBatch();
+                return null;
+            });
             succeeded += buffered.size();
-        } catch (SQLException batchEx) {
-            log.warn("BATCH FAILURE in {} after {} rows. Attempting recovery via row-by-row fallback. Error: {}", 
-                    fileName, buffered.size(), batchEx.getMessage());
+        } catch (Exception batchEx) {
+            if (!SqlRetry.isTransient(batchEx)) {
+                log.warn("PERMANENT BATCH FAILURE in {} after {} rows. Falling back to row-by-row. Error: {}", 
+                        fileName, buffered.size(), batchEx.getMessage());
+            } else {
+                log.error("TRANSIENT BATCH FAILURE in {} exhausted retries. Falling back to row-by-row. Error: {}", 
+                        fileName, batchEx.getMessage());
+            }
+            
             ps.clearBatch();
             for (PendingRow row : buffered) {
                 try {
-                    bind(row);
-                    ps.executeUpdate();
+                    SqlRetry.withRetry(retryCfg, "row:" + fileName + ":" + row.lineNumber(), () -> {
+                        binder.bind(ps, row);
+                        ps.executeUpdate();
+                        return null;
+                    });
                     succeeded++;
-                } catch (SQLException rowEx) {
+                } catch (Exception rowEx) {
                     skipped++;
                     log.error("ROW FAILURE in {} line={} key={}. REASON: {}. DATA: {}", 
                             fileName, row.lineNumber(), row.keyValue(), rowEx.getMessage(), Arrays.toString(row.values()));
@@ -66,13 +90,6 @@ public class ResilientBatchExecutor implements AutoCloseable {
             }
         } finally {
             buffered.clear();
-        }
-    }
-
-    private void bind(PendingRow row) throws SQLException {
-        String[] v = row.values();
-        for (int i = 0; i < cols.size(); i++) {
-            cols.get(i).binder().bind(ps, i + 1, v[i]);
         }
     }
 

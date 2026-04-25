@@ -125,12 +125,26 @@ public class FileIngestor {
 
             try (Connection conn = ds.getConnection()) {
                 conn.setAutoCommit(false);
-                try (ResilientBatchExecutor upserter = new ResilientBatchExecutor(
-                             conn, upsertSql, cols, props.getBatch().getUpsertSize(), file.fileName());
-                     PreparedStatement deletePs = conn.prepareStatement(deleteSql)) {
 
-                    int deleteBatchSize = 0;
-                    int deleteBatchLimit = props.getBatch().getDeleteSize();
+                ResilientBatchExecutor.RowBinder upsertBinder = (ps, row) -> {
+                    String[] v = row.values();
+                    for (int i = 0; i < cols.size(); i++) {
+                        cols.get(i).binder().bind(ps, i + 1, v[i]);
+                    }
+                };
+
+                ResilientBatchExecutor.RowBinder deleteBinder = (ps, row) -> {
+                    String[] v = row.values();
+                    for (int i = 0; i < v.length; i++) {
+                        if (v[i] == null || v[i].isEmpty()) ps.setNull(i + 1, java.sql.Types.VARCHAR);
+                        else ps.setString(i + 1, v[i]);
+                    }
+                };
+
+                try (ResilientBatchExecutor upserter = new ResilientBatchExecutor(
+                             conn, upsertSql, upsertBinder, props.getBatch().getUpsertSize(), file.fileName(), props.getRetry());
+                     ResilientBatchExecutor deleter = new ResilientBatchExecutor(
+                             conn, deleteSql, deleteBinder, props.getBatch().getDeleteSize(), file.fileName(), props.getRetry())) {
 
                     // 'U' -> upsert, 'D' -> delete. Track current batch side so we flush on flip.
                     char activeSide = 0; // 0=none, 'U'=upsert, 'D'=delete
@@ -150,35 +164,26 @@ public class FileIngestor {
                         char action = (actionIdx >= 0 && actionIdx < row.length && row[actionIdx] != null && !row[actionIdx].isEmpty())
                                 ? row[actionIdx].charAt(0) : 'I';
 
+                        String firstKey = (keySrcIdx.length > 0 && keySrcIdx[0] >= 0 && keySrcIdx[0] < row.length)
+                                ? row[keySrcIdx[0]] : null;
+
                         if (action == 'D') {
-                            // Flip from upsert side: flush upserts first to preserve in-file ordering.
                             if (activeSide == 'U') {
                                 upserter.flush();
                                 activeSide = 0;
                             }
                             delCount++;
-                            // Bind composite key values; allow NULLs (treated as MariaDB-side NULL — no row matched).
+                            String[] keyVals = new String[keySrcIdx.length];
                             for (int k = 0; k < keySrcIdx.length; k++) {
                                 int idx = keySrcIdx[k];
-                                String v = (idx >= 0 && idx < row.length) ? row[idx] : null;
-                                if (v == null || v.isEmpty()) deletePs.setNull(k + 1, java.sql.Types.VARCHAR);
-                                else deletePs.setString(k + 1, v);
+                                keyVals[k] = (idx >= 0 && idx < row.length) ? row[idx] : null;
                             }
-                            deletePs.addBatch();
-                            deleteBatchSize++;
+                            deleter.add(new PendingRow(keyVals, parser.currentLine(), firstKey));
                             activeSide = 'D';
-                            if (deleteBatchSize >= deleteBatchLimit) {
-                                deletePs.executeBatch();
-                                deleteBatchSize = 0;
-                                activeSide = 0;
-                            }
                         } else {
-                            // 'I' or 'U' (default 'I' for unrecognized actions).
                             if (action == 'U') updCount++; else insCount++;
-                            // Flip from delete side: flush deletes first to preserve in-file ordering.
                             if (activeSide == 'D') {
-                                if (deleteBatchSize > 0) deletePs.executeBatch();
-                                deleteBatchSize = 0;
+                                deleter.flush();
                                 activeSide = 0;
                             }
                             String[] vals = new String[cols.size()];
@@ -186,30 +191,27 @@ public class FileIngestor {
                                 int idx = srcIndex[i];
                                 vals[i] = (idx >= 0 && idx < row.length) ? row[idx] : null;
                             }
-                            String firstKey = (keySrcIdx.length > 0 && keySrcIdx[0] >= 0 && keySrcIdx[0] < row.length)
-                                    ? row[keySrcIdx[0]] : null;
                             upserter.add(new PendingRow(vals, parser.currentLine(), firstKey));
                             activeSide = 'U';
                         }
 
-                        // Cap on per-file row-error skips
-                        if (upserter.skipped() + skipped > maxSkipsPerFile) {
-                            throw new RuntimeException("maxSkippedRowsPerFile exceeded: " + (upserter.skipped() + skipped));
+                        if (upserter.skipped() + deleter.skipped() + skipped > maxSkipsPerFile) {
+                            throw new RuntimeException("maxSkippedRowsPerFile exceeded: " + (upserter.skipped() + deleter.skipped() + skipped));
                         }
                     }
 
-                    // Final flushes preserve order: whichever side is active flushes last.
                     if (activeSide == 'D') {
-                        upserter.flush(); // upsert buffer should be empty, but be safe
-                        if (deleteBatchSize > 0) deletePs.executeBatch();
+                        upserter.flush();
+                        deleter.flush();
                     } else {
-                        if (deleteBatchSize > 0) deletePs.executeBatch();
+                        deleter.flush();
                         upserter.flush();
                     }
                     conn.commit();
 
                     int inserted = upserter.succeeded();
-                    int errorSkips = skipped + upserter.skipped();
+                    int deleted = deleter.succeeded();
+                    int errorSkips = skipped + upserter.skipped() + deleter.skipped();
                     int totalSkipped = errorSkips + filterSkips;
 
                     String t = target.name();
