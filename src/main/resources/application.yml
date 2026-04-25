@@ -1,3 +1,6 @@
+server:
+  port: ${SERVER_PORT:8080}
+
 spring:
   application:
     name: lseg-ingest
@@ -14,6 +17,7 @@ ingest:
   inputDir: ${INGEST_DIR:/data}
   archiveDir: ${ARCHIVE_DIR:/archive}
   businessDate: ${INGEST_DATE:20260425}
+  charset: ${INGEST_CHARSET:UTF-8}
   skipPatterns:
     - "*.note.txt.zip"
     - "Reference-INT-EQUI-*"
@@ -27,6 +31,19 @@ ingest:
   resilience:
     fallbackOnBatchFail: true
     maxSkippedRowsPerFile: 1000
+  cancel:
+    checkRows: 5000              # poll stop signal every N rows inside a file
+  reaper:
+    enabled: true
+    staleJobTimeoutSeconds: 10800   # reap RUNNING jobs whose heartbeat is older than 3h
+    pollIntervalSeconds: 60
+  cluster:
+    lockName: ${CLUSTER_LOCK_NAME:lseg-ingest-cluster}
+    heartbeatIntervalSeconds: 30
+  retry:
+    maxAttempts: 3
+    initialDelayMs: 250
+    maxDelayMs: 5000
 
 db:
   runtime:
@@ -39,6 +56,8 @@ db:
       connectionTimeoutMs: 30000
 
 logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [job=%X{jobId:-} file=%X{file:-}] %logger{36} - %msg%n"
   level:
     root: INFO
     com.lseg.ingest: INFO

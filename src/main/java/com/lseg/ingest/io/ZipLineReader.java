@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +22,10 @@ public class ZipLineReader implements AutoCloseable {
     private final BufferedReader reader;
 
     public ZipLineReader(Path path) throws IOException {
+        this(path, StandardCharsets.UTF_8);
+    }
+
+    public ZipLineReader(Path path, Charset charset) throws IOException {
         this.fileStream = Files.newInputStream(path);
         this.zip = new ZipInputStream(fileStream);
         ZipEntry entry = zip.getNextEntry();
@@ -30,7 +35,7 @@ public class ZipLineReader implements AutoCloseable {
             fileStream.close();
             throw new IOException("Zip is empty: " + path);
         }
-        this.reader = new BufferedReader(new InputStreamReader(zip, StandardCharsets.UTF_8), 1 << 16);
+        this.reader = new BufferedReader(new InputStreamReader(zip, charset), 1 << 16);
     }
 
     public BufferedReader reader() { return reader; }

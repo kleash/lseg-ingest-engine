@@ -26,9 +26,11 @@ CREATE TABLE IF NOT EXISTS lseg_quotes (
     expiration_date VARCHAR(255),
     security_description VARCHAR(255),
     warrant_issue_date VARCHAR(255),
-    is_deleted TINYINT(1) DEFAULT 0,
-    UNIQUE KEY uniq_quotes_quote_perm_id (quote_perm_id),
+    is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+    UNIQUE KEY uniq_quotes_asset_id_quote_id (asset_id, quote_id),
     KEY idx_quotes_quote_id (quote_id),
-    KEY idx_quotes_asset_id (asset_id)
+    KEY idx_quotes_asset_id (asset_id),
+    KEY idx_quotes_quote_perm_id (quote_perm_id),
+    KEY idx_quotes_is_deleted (is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- rollback DROP TABLE lseg_quotes;

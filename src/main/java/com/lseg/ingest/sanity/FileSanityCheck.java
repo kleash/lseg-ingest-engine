@@ -6,11 +6,14 @@ import com.lseg.ingest.plan.IngestFile;
 import com.lseg.ingest.plan.Kind;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Cheap pre-ingest header check: opens the zip, locates header, verifies
  *   - metadata kind matches filename kind
  *   - business date matches the configured date
- *   - the natural-key column for the target is present in the header.
+ *   - every unique-key source header for the target is present in the file header.
  * Reads only the first ~50 lines.
  */
 @Component
@@ -32,8 +35,13 @@ public class FileSanityCheck {
             if (expectedBusinessDate != null && !expectedBusinessDate.equals(md.businessDate()))
                 return new Result(false, "business date=" + md.businessDate() + " expected=" + expectedBusinessDate, md, p.headerColumns());
 
-            if (!p.headerIndex().containsKey(file.target().permIdSourceHeader))
-                return new Result(false, "missing key column " + file.target().permIdSourceHeader, md, p.headerColumns());
+            List<String> missing = new ArrayList<>();
+            for (String src : file.target().uniqueKeySourceHeaders) {
+                if (!p.headerIndex().containsKey(src)) missing.add(src);
+            }
+            if (!missing.isEmpty()) {
+                return new Result(false, "missing key column(s) " + missing, md, p.headerColumns());
+            }
 
             return new Result(true, "ok", md, p.headerColumns());
         } catch (Exception e) {

@@ -27,8 +27,9 @@ CREATE TABLE IF NOT EXISTS lseg_orgs (
     issue_perm_id VARCHAR(255),
     quote_id VARCHAR(255),
     quote_perm_id VARCHAR(255),
-    is_deleted TINYINT(1) DEFAULT 0,
-    UNIQUE KEY uniq_orgs_entity_perm_id (entity_perm_id),
-    KEY idx_orgs_entity_id (entity_id)
+    is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+    UNIQUE KEY uniq_orgs_entity_id (entity_id),
+    KEY idx_orgs_entity_perm_id (entity_perm_id),
+    KEY idx_orgs_is_deleted (is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- rollback DROP TABLE lseg_orgs;
