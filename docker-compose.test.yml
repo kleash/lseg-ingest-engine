@@ -1,0 +1,94 @@
+services:
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpw
+      MARIADB_DATABASE: lseg
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  init-accounts:
+    image: mariadb:11
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "mariadb -h mariadb -uroot -prootpw lseg -e \"
+        CREATE USER IF NOT EXISTS 'owner'@'%' IDENTIFIED BY 'ownerpw';
+        GRANT ALL ON lseg.* TO 'owner'@'%';
+        CREATE USER IF NOT EXISTS 'ingest'@'%' IDENTIFIED BY 'ingestpw';
+        GRANT INSERT, UPDATE, DELETE, SELECT ON lseg.* TO 'ingest'@'%';
+        FLUSH PRIVILEGES;\""
+
+  ingest1:
+    build: .
+    depends_on:
+      init-accounts:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: lseg
+      DB_OWNER_USER: owner
+      DB_OWNER_PASSWORD: ownerpw
+      DB_USER: ingest
+      DB_PASSWORD: ingestpw
+      INGEST_DIR: /data
+      INGEST_DATE: "20260425"
+      SERVER_PORT: "8080"
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./test-input/inst1:/data
+
+  ingest2:
+    build: .
+    depends_on:
+      ingest1:
+        condition: service_healthy
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: lseg
+      DB_OWNER_USER: owner
+      DB_OWNER_PASSWORD: ownerpw
+      DB_USER: ingest
+      DB_PASSWORD: ingestpw
+      INGEST_DIR: /data
+      INGEST_DATE: "20260425"
+      SERVER_PORT: "8080"
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./test-input/inst2:/data
+
+  ingest3:
+    build: .
+    depends_on:
+      ingest1:
+        condition: service_healthy
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: lseg
+      DB_OWNER_USER: owner
+      DB_OWNER_PASSWORD: ownerpw
+      DB_USER: ingest
+      DB_PASSWORD: ingestpw
+      INGEST_DIR: /data
+      INGEST_DATE: "20260425"
+      SERVER_PORT: "8080"
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./test-input/inst3:/data

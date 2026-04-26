@@ -39,8 +39,12 @@ class FileScannerTest {
     void classifiesOrgs() {
         assertEquals(Target.ORGS,
                 scanner.classify(Path.of("/x"), "Organization.INT.25748.20260425.1.1.1.txt.zip").target());
+        // Vendor typo (GLOABL) — historical filename
         assertEquals(Target.ORGS,
                 scanner.classify(Path.of("/x"), "EIS_DELTA_GLOABL_ORGN.REF.25966.20260425.1.1.1.txt.zip").target());
+        // Corrected spelling (GLOBAL) — defensive against future feed evolution
+        assertEquals(Target.ORGS,
+                scanner.classify(Path.of("/x"), "EIS_DELTA_GLOBAL_ORGN.REF.25966.20260425.1.1.1.txt.zip").target());
     }
 
     @Test

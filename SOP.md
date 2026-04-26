@@ -4,6 +4,18 @@ This document is the operational runbook for the LSEG ingestion service. It assu
 
 ---
 
+## 0. Test stack (multi-instance soak)
+
+A dedicated `docker-compose.test.yml` brings up 3 ingest containers + 1 MariaDB with health-gated startup (ingest2/3 wait until ingest1's actuator health endpoint reports up so Liquibase isn't applied concurrently from three nodes against a fresh schema). Ports 8081/8082/8083 are exposed for direct API hits per node.
+
+```bash
+mkdir -p test-input/inst{1,2,3}
+docker compose -f docker-compose.test.yml up -d --build
+# stage files into test-input/inst1, trigger via :8081, etc.
+```
+
+---
+
 ## 1. Daily verification
 
 ### 1.1 Health summary

@@ -69,9 +69,14 @@ A mission-critical, idempotent, multi-instance ingestion engine for LSEG EIS dai
    │    "D <key>" then "I <key>" leaves the  │
    │    row LIVE, "I <key>" then "D <key>"   │
    │    leaves the row SOFT-DELETED.         │
-   │  - ResilientBatchExecutor: on batch     │
-   │    failure, replay individually; bad    │
-   │    rows skipped + logged with line+key. │
+   │  - ResilientBatchExecutor (generic over │
+   │    a RowBinder, used for BOTH UPSERT    │
+   │    and DELETE batches): retries the     │
+   │    whole batch on transient errors via  │
+   │    SqlRetry; on permanent failure or    │
+   │    retry exhaustion, replays rows       │
+   │    individually; bad rows skipped +     │
+   │    logged with line+key.                │
    │  - maxSkippedRowsPerFile enforced.      │
    └─────────────────────────────────────────┘
 ```
@@ -103,7 +108,7 @@ NULL key columns are tolerated: MariaDB UNIQUE treats NULL as distinct, so NULL-
 The application is designed to be deployed as multiple identical instances. Concurrent instances coordinate strictly through the database:
 
 1. **Cluster lock (`GET_LOCK`)** — at most one node may be running an ingestion at any time. Any other node attempting to start a job will release its claim back to QUEUED so it's retried on the next poll cycle. The lock is released automatically by MariaDB when the holding connection drops, bounding stuck-state duration to `wait_timeout`.
-2. **Atomic job claim** — single-statement `UPDATE lseg_jobs SET status='RUNNING' … WHERE id=? AND status='QUEUED'` — only one node sees `rowsAffected=1` for any given job.
+2. **Atomic job claim** — single-statement `UPDATE lseg_jobs SET status='RUNNING' … WHERE id=? AND status='QUEUED'` — only one node sees `rowsAffected=1` for any given job. If the claiming node then fails to acquire the cluster `GET_LOCK` (because another node is mid-run), the worker reverts the row to `QUEUED` so a different node can pick it up — without this revert, a flapping claim would leave the job stuck in `RUNNING` forever.
 3. **`KeyHolder`-based job creation** — avoids the unsafe `LAST_INSERT_ID()` round-trip across pooled connections.
 4. **STOPPED-aware status writes** — operator-issued stops are never overwritten by completion writes.
 5. **Heartbeat + reaper** — every running job updates `last_heartbeat_at` every 30 s. `JobReaper` (configurable, default 3 h timeout) marks RUNNING jobs FAILED if their heartbeat goes stale, freeing the queue for the next node.
@@ -134,7 +139,7 @@ All knobs are externalised in `application.yml` and bind to `IngestProperties` (
 | `ingest.reaper.pollIntervalSeconds` | `60` | Reaper sweep cadence |
 | `ingest.cluster.lockName` | `lseg-ingest-cluster` | `GET_LOCK` name; per-environment override possible |
 | `ingest.cluster.heartbeatIntervalSeconds` | `30` | Job heartbeat cadence |
-| `ingest.retry.maxAttempts` | `3` | Per-file transient-SQL retry attempts |
+| `ingest.retry.maxAttempts` | `3` | Transient-SQL retry attempts (applied at both batch and per-row level) |
 | `ingest.retry.initialDelayMs` | `250` | First backoff delay |
 | `ingest.retry.maxDelayMs` | `5000` | Backoff cap |
 | `db.runtime.pool.maxSize` | `40` | Hikari pool max size |
@@ -211,12 +216,13 @@ Bench result on the production drop (268 files / 28 M declared rows, single inst
 
 | Layer | Location | Run |
 |---|---|---|
-| Java unit tests | `src/test/java/...` | `mvn test` (18 tests) |
-| Python integration tests | `tests/integration/` | `pytest -v` (13 tests, ~3 min) |
-| Multi-instance test plan | `CORNER_CASES.md §5` | manual (multi-container compose + monitor) |
-| File resilience test plan | `CORNER_CASES.md §6` | scripted matrix (planned) |
+| Java unit tests | `src/test/java/...` | `mvn test` (21 tests) |
+| Python integration tests | `tests/integration/` (not committed) | `pytest -v` (13 tests, ~3 min) |
+| Multi-instance compose stack | `docker-compose.test.yml` | `docker compose -f docker-compose.test.yml up --build` (3 ingest containers + 1 mariadb, health-gated startup) |
+| Multi-instance test plan | `CORNER_CASES.md` Planned §5 | manual (multi-container compose + continuous DB/log/API monitoring) |
+| File resilience test plan | `CORNER_CASES.md` Planned matrix | scripted matrix (planned) |
 
-Java unit suite covers: file scanner, pipe parser (header detection / extra+missing cols / over-long rows), SQL builder (composite-key composition + ON DUPLICATE clause excludes key cols), RIC caret filter, and the transient-error classifier (`SqlRetry`).
+Java unit suite covers: file scanner (incl. tolerant target mapping for vendor name variants like `GLOABL_ORGN`/`GLOBAL_ORGN`), pipe parser (header detection / extra+missing cols / over-long rows), SQL builder (composite-key composition + ON DUPLICATE clause excludes key cols), RIC caret filter, transient-error classifier (`SqlRetry`), and the resilient batch executor (Mockito-backed: batch success, transient retry+success, permanent failure → row-by-row fallback with bad-row skip).
 
 Python integration suite (against running compose stack) covers: happy path with synthetic files, INT→DELTA seq ordering, **D-then-I keeps row live** (C1 fix), **I-then-D leaves row deleted**, **RIC caret filter is INT-only**, sanity failure on wrong business date, corrupt zip is `SKIPPED_SANITY` without aborting the job, extra/missing columns tolerated, empty zip → `SKIPPED_SANITY`, idempotent rerun, **two queued jobs serialise via cluster lock** (`started_at >= prior finished_at`), **stop signal preserved** through completion, **stale RUNNING job auto-FAILED by reaper**.
 

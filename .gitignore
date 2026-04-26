@@ -6,7 +6,7 @@ target/
 *.iml
 *.swp
 
-# Verification and Testing scripts
+# Verification and testing scripts
 reconcile_ingestion.py
 verify_results.sql
 verify_metrics.sql
@@ -15,9 +15,13 @@ sample_data.sql
 # Data directories
 input/
 archive/
-\n# Local envs and data\ntests/integration/.venv/\ntests/integration/.pytest_cache/\ntest-input/
 
 # Local envs and data
 tests/integration/.venv/
 tests/integration/.pytest_cache/
 test-input/
+
+# Ad-hoc chaos / sabotage scripts kept locally, not committed
+extensive_test.py
+filesystem_sabotage.py
+resilience_sabotage.py

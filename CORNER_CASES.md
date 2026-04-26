@@ -4,7 +4,7 @@ Every scenario below is either **verified** (covered by an automated test) or **
 
 ---
 
-## Verified — Java unit suite (`mvn test`, 18 tests)
+## Verified — Java unit suite (`mvn test`, 21 tests)
 
 | ID | Scenario | Expected | Verified by |
 |---|---|---|---|
@@ -19,6 +19,10 @@ Every scenario below is either **verified** (covered by an automated test) or **
 | U-9 | `SqlRetry.isTransient` flags 1213 (deadlock), 1205 (lock-wait), `08*` (connection), `40001` (serialization) | True | `SqlRetryTest` |
 | U-10 | `SqlRetry.isTransient` does not flag 1062 (unique violation) | False; propagates immediately | `SqlRetryTest` |
 | U-11 | Transient error retried up to `maxAttempts` then succeeds | 3 attempts, returns ok | `SqlRetryTest` |
+| U-12 | `ResilientBatchExecutor` happy path: batch flushes correctly when buffer fills | `executeBatch()` called once, succeeded count matches buffered | `ResilientBatchExecutorTest` |
+| U-13 | `ResilientBatchExecutor` permanent batch failure → row-by-row fallback; one bad row skipped while others succeed | `clearBatch()` called, `executeUpdate()` called per row, succeeded + skipped accounted | `ResilientBatchExecutorTest` |
+| U-14 | `ResilientBatchExecutor` transient deadlock at batch level → retried successfully without falling back to row-by-row | Batch executed twice, no `executeUpdate()` calls | `ResilientBatchExecutorTest` |
+| U-15 | `FileScanner.mapTarget` accepts both `EIS_DELTA_GLOABL_ORGN` (vendor typo) and `EIS_DELTA_GLOBAL_ORGN` (corrected) | Both → `Target.ORGS` | `FileScannerTest` |
 
 ---
 
@@ -62,12 +66,19 @@ Runs against the live `docker compose` stack with synthetic small fixtures and a
 
 ### Setup
 
-Three ingest containers (`ingest-a`, `ingest-b`, `ingest-c`) joined to one MariaDB. Each binds its own host directory:
-* `host:./input-a` → `container:/data` for `ingest-a`
-* `host:./input-b` → `container:/data` for `ingest-b`
-* `host:./input-c` → `container:/data` for `ingest-c`
+Use the dedicated `docker-compose.test.yml` stack: three ingest containers (`ingest1`, `ingest2`, `ingest3`) joined to one MariaDB. The compose file uses **health-gated startup**: `ingest2`/`ingest3` wait until `ingest1` reports healthy via `/actuator/health`. This guarantees Liquibase is applied exactly once before any other node attempts to boot — without this gate, three nodes booting simultaneously against an empty schema could collide on the change-log lock.
+
+Each instance binds its own host directory:
+* `host:./test-input/inst1` → `container:/data` for `ingest1`
+* `host:./test-input/inst2` → `container:/data` for `ingest2`
+* `host:./test-input/inst3` → `container:/data` for `ingest3`
 
 Each instance exposes a unique host port (`8081`, `8082`, `8083`). All three share the same MariaDB.
+
+```bash
+mkdir -p test-input/inst1 test-input/inst2 test-input/inst3
+docker compose -f docker-compose.test.yml up -d --build
+```
 
 ### Steps and live monitoring
 

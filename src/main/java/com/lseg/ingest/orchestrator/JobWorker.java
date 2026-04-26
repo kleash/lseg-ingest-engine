@@ -42,7 +42,8 @@ public class JobWorker {
         try {
             boolean ran = orchestrator.run(jobId);
             if (!ran) {
-                log.info("Job {} not run on this tick (cluster lock unavailable); left QUEUED", jobId);
+                log.info("Job {} not run on this tick (cluster lock unavailable); reverting to QUEUED", jobId);
+                jobDao.updateStatus(jobId, "QUEUED", null);
                 return;
             }
             // updateStatus is STOPPED-aware: it won't overwrite a stop.

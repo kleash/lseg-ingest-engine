@@ -1,54 +1,95 @@
 # GEMINI.md - LSEG Ingestion Project
 
-## Project Overview
-The `lseg-ingest` service is a high-throughput, idempotent, and resilient Spring Boot application designed to ingest LSEG EIS daily reference data files into a MariaDB database. It handles both full snapshots (**INT**) and daily incremental updates (**DELTA**).
+Agent-oriented project map. Use this as the entry point for an LLM coding agent picking up work on this repo.
 
-### Core Architecture
-- **Technology Stack:** Java 21, Spring Boot 3.3.5, Plain JDBC (for performance), MariaDB, Liquibase (schema management), Micrometer (metrics).
-- **Execution Model:** Multi-instance capable service using a polled job queue.
-  1. **Job Queue:** Jobs are enqueued in `lseg_jobs`.
-  2. **Job Worker:** `JobWorker` polls for `QUEUED` tasks and claims them for execution.
-  3. **Orchestration:** `IngestOrchestrator` handles file scanning, sanity checks, and parallel ingestion.
-  4. **Parallelism:** Ingestion is parallelized by target table (`ORGS`, `ASSETS`, `QUOTES`), with **INT** files gated before **DELTA** files for each target.
-- **Ingestion Strategy:** Uses `INSERT ... ON DUPLICATE KEY UPDATE` for idempotent upserts and soft deletes (`is_deleted = 1`).
-- **Resilience:** `ResilientBatchExecutor` handles batch failures by falling back to row-by-row processing.
+## Project Overview
+
+`lseg-ingest` is a mission-critical Spring Boot 3.3 application that ingests LSEG EIS daily reference data (`.txt.zip` pipe-delimited files) into MariaDB. It is **multi-instance capable**: identical containers can be deployed in parallel, but a database-backed cluster lock guarantees only one is processing at any given time. Hospital-grade reliability is the target.
+
+### Architecture summary
+- **Stack:** Java 21, Spring Boot 3.3.5 (web + actuator + scheduling), Plain JDBC (hot path), HikariCP, MariaDB 11, Liquibase (separate `owner` DB account), Micrometer.
+- **Coordination:** `lseg_jobs` queue + `JobWorker` poll + atomic UPDATE claim + MariaDB `GET_LOCK` cluster singleton + heartbeat + `JobReaper` for stuck-RUNNING recovery.
+- **Idempotency:** composite UNIQUE on natural keys + `INSERT … ON DUPLICATE KEY UPDATE` + `lseg_file_audit` (skip on filename SUCCESS).
+- **Soft delete:** `is_deleted` column reset to 0 on every successful upsert.
+- **Resilience:** `ResilientBatchExecutor` is generic over a `RowBinder` (used for both UPSERT and DELETE batches); `SqlRetry` with exponential backoff at both batch and per-row level on transient errors (deadlock 1213, lock-wait 1205, connection class `08*`, serialization `40001`); permanent-batch failures fall back to row-by-row replay with per-row exception isolation.
+- **In-file ordering:** when the action stream switches between `I/U` and `D`, the active batch flushes before the other side accumulates. Guarantees `D <key>` then `I <key>` leaves row LIVE; `I <key>` then `D <key>` leaves row SOFT-DELETED.
+- **Cancellation:** every `ingest.cancel.checkRows` rows the inner loop polls `JobDao.isStopped(jobId)`; on stop, the current transaction rolls back. STOPPED status is sticky (worker writes never overwrite it).
+- **Configurability:** every tunable (threads, batch sizes, retry, reaper, cluster lock, charset, archive dir) is bound to `IngestProperties` from `application.yml`.
+- **Observability:** MDC `[job=<id> file=<name>]` log pattern; Micrometer counters/timers per target/kind/op; REST status endpoints.
+
+### File classification
+- `Organization.*`, `*GLOBAL_ORGN*`, `*GLOABL_ORGN*` (vendor typo tolerated) → `lseg_orgs`
+- `EIS_INT_*_ASSETS.*`, `EIS_DELTA_GLOBAL_ASSETS.*` → `lseg_assets`
+- `EIS_INT_*_QUOTE/QUOTES.*`, `EIS_DELTA_*_QUOTE.*` → `lseg_quotes`
+- Skip: `*.note.txt.zip`, `Reference-INT-EQUI-*`
+- Row filter: INT-quote rows with `RIC` containing `^` (DELTA quote rows are kept)
+
+### Schema
+- Composite UNIQUE keys: `lseg_orgs(entity_id)`, `lseg_assets(asset_id)`, `lseg_quotes(asset_id, quote_id)`. NULL key columns tolerate duplicates per spec.
+- `lseg_jobs`: `(business_date, input_dir, last_heartbeat_at)` carried per-job; reaper sweeps stale RUNNING after 3 h (configurable).
+- `lseg_file_audit`: UNIQUE on `file_name`; `STARTED → SUCCESS|FAILED|SKIPPED_SANITY|SKIPPED`.
 
 ## API Endpoints
 
-### Job Management (`/api/jobs`)
-- `POST /api/jobs/trigger`: Enqueues a new ingestion job.
-- `POST /api/jobs/stop`: Signals all running workers to stop immediately.
-- `POST /api/jobs/restart?jobId=N`: Re-enqueues a job for reprocessing.
+| Method | Path | Params | Effect |
+|---|---|---|---|
+| POST | `/api/jobs/trigger` | `businessDate?`, `inputDir?` | Queue a job (per-job business date + input dir override) |
+| POST | `/api/jobs/stop` | `jobId?` | Stop one (id) or all running/queued jobs |
+| POST | `/api/jobs/restart` | `jobId?` | Re-queue an existing or new job |
+| GET | `/api/jobs/status` | `jobId` | Read job status |
+| POST | `/api/files/skip` | `fileName`, `reason` | Manual file skip |
+| GET | `/actuator/health` | — | Spring health |
 
-### File Management (`/api/files`)
-- `POST /api/files/skip?fileName=X&reason=Y`: Manually marks a file as `SKIPPED`.
+> Endpoints are not yet authenticated. Security is a planned phase.
 
 ## Building and Running
 
-### Commands
-- **Build:** `mvn clean package -DskipTests`
-- **Run (Local):**
-  ```bash
-  DB_HOST=127.0.0.1 DB_PORT=3306 DB_NAME=lseg \
-  DB_OWNER_USER=owner DB_OWNER_PASSWORD=ownerpw \
-  DB_USER=ingest    DB_PASSWORD=ingestpw \
-  INGEST_DIR=/path/to/files INGEST_DATE=20260425 \
-  java -jar target/lseg-ingest-1.0.0.jar
-  ```
-- **Trigger Ingestion:** `curl -X POST http://localhost:8080/api/jobs/trigger`
-- **Test:** `mvn test`
+```bash
+# Build
+mvn clean package -DskipTests
+# (or with tests)
+mvn test            # 21 unit tests
+
+# Single-node compose (developer mode)
+docker compose down -v
+docker compose up -d --build
+curl -X POST 'http://localhost:8080/api/jobs/trigger?businessDate=20260425&inputDir=/data'
+
+# Multi-instance test stack (3 ingest containers, health-gated startup)
+docker compose -f docker-compose.test.yml up -d --build
+```
 
 ## Development Conventions
 
-### Coding Standards
-- **Performance:** Use plain JDBC for the hot ingestion loop.
-- **Idempotency:** All operations must support safe re-execution.
-- **Defensive Parsing:** Bind columns by name to handle feed schema evolution.
+### Coding standards
+- Hot ingestion path stays on plain JDBC. Spring is for wiring, configuration, REST, scheduling, MDC.
+- Idempotency is non-negotiable. Every operation (file, row, job) must be safely re-executable.
+- Defensive parsing: bind columns by header name, not position; tolerate extra/missing columns; warn on duplicates.
+- Make every tunable a `@ConfigurationProperties` field — never hard-code thread pools, batch sizes, or timeouts.
+- New SQL on the hot path must go through `ResilientBatchExecutor` (or an equivalent retry+fallback wrapper).
+- Adding new logging → add MDC tags (`jobId`, `file`).
+
+### Critical bugs fixed (do not regress)
+1. `LAST_INSERT_ID()` across pooled connections is unsafe — use `KeyHolder`.
+2. In-file `D <key>` then `I <key>` must leave the row live (flush UPSERT batch when a `D` arrives).
+3. STOPPED status must not be overwritten by completion writes.
+4. A node that claims a job but loses the cluster lock must revert the row to QUEUED (not leave it RUNNING forever).
+5. The cluster `GET_LOCK` connection must be held for the duration of the run on a dedicated connection — released automatically on connection drop.
+6. `lseg_jobs.RUNNING` must be reaped if heartbeat is stale (default 3 h) — manual recovery alone is insufficient for SLA.
 
 ### Testing
-- **Unit Tests:** Verify business logic (classification, parsing, filtering).
-- **Integration Tests:** (Optional but recommended) Verify against a real DB via Testcontainers.
+- **Unit (`mvn test`)**: classifier, parser, SQL builder, RIC filter, retry classifier, batch executor (Mockito).
+- **Integration (`pytest tests/integration/`)**: synthetic-fixture happy path, INT/DELTA seq ordering, in-file action-ordering edges (D-then-I, I-then-D), RIC INT-only filter, sanity rejections (corrupt zip, wrong date, empty zip), idempotent rerun, cluster-lock serialisation, stop-signal stickiness, reaper behaviour.
+- **Manual / planned matrix**: `CORNER_CASES.md` — 3-node soak test with continuous DB/log/API monitoring, plus a 30+-case file-resilience matrix (malformed content, mid-ingest rm/mv/lock, DB chaos, etc.).
 
 ### Monitoring
-- **Audit:** All file actions are recorded in `lseg_file_audit`.
-- **Metrics:** Published via Micrometer/Actuator.
+- `lseg_file_audit` — per-file outcome.
+- `lseg_jobs` — per-run state, heartbeat, node ownership, error message.
+- Micrometer metrics: `ingest.overall.duration`, `ingest.file.duration{target,kind,status}`, `ingest.rows.{parsed,inserted,skipped.error,skipped.filter,ops}`, `ingest.sanity.failures{target}`, `ingest.archive.errors`, `ingest.target.errors`, `ingest.orchestrator.errors`.
+
+### Cluster invariants (alarm if violated)
+- `SELECT COUNT(*) FROM lseg_jobs WHERE status='RUNNING' <= 1` — always.
+- `last_heartbeat_at >= NOW() - INTERVAL 60 SECOND` for any RUNNING job (default 30 s heartbeat × 2).
+- `node_id` of the RUNNING job matches the container that most recently logged `ClusterLock 'lseg-ingest-cluster' acquired`.
+
+See `README.md`, `SOP.md`, and `CORNER_CASES.md` for full detail.
