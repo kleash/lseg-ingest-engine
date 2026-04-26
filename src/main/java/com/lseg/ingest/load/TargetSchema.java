@@ -95,8 +95,6 @@ public class TargetSchema {
                 col("Exercise_Begin_Date", "exercise_begin_date", Types.VARCHAR, STRING),
                 col("Expiration_Date", "expiration_date", Types.VARCHAR, STRING),
                 col("Security_Description", "security_description", Types.VARCHAR, STRING),
-                col("Warrant_Issue_Date", "warrant_issue_date", Types.VARCHAR, STRING),
-                col("Security_Description", "security_description", Types.VARCHAR, STRING),
                 col("Warrant_Issue_Date", "warrant_issue_date", Types.VARCHAR, STRING)));
 
         SCHEMAS.put(Target.DSS_BONDS, List.of(

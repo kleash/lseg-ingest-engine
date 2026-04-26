@@ -6,6 +6,8 @@ import com.opencsv.exceptions.CsvValidationException;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.lseg.ingest.Constants.*;
 
@@ -14,6 +16,8 @@ import static com.lseg.ingest.Constants.*;
  * Synthesizes an "Action" column at the beginning of each row (value='I').
  */
 public class CsvFileParser implements FileParser {
+
+    private static final Pattern BONDS_CSV_DATE_PATTERN = Pattern.compile("SG_HK_Bonds_(\\d{8})");
 
     private final BufferedReader reader;
     private final String fileName;
@@ -32,11 +36,9 @@ public class CsvFileParser implements FileParser {
     @Override
     public void initialize(int maxLookahead) throws IOException {
         // Filename: SG_HK_Bonds_20260420 070012.csv
-        String date = "99991231";
-        if (fileName.length() >= 20) {
-            String sub = fileName.substring(12, 20);
-            if (sub.matches("\\d{8}")) date = sub;
-        }
+        Matcher m = BONDS_CSV_DATE_PATTERN.matcher(fileName);
+        String date = m.find() ? m.group(1) : "99991231";
+        
         this.metadata = new Metadata("SG_HK_Bonds", KIND_INT, "DSS", date, 0, -1);
         
         this.csvReader = new CSVReader(reader);
@@ -48,7 +50,7 @@ public class CsvFileParser implements FileParser {
             // Synthesize "Action" column
             List<String> cols = new ArrayList<>();
             cols.add(COL_ACTION);
-            cols.addAll(Arrays.asList(headers));
+            cols.addAll(List.of(headers));
             
             this.headerColumns = Collections.unmodifiableList(cols);
             this.headerIndex = new HashMap<>(headerColumns.size() * 2);

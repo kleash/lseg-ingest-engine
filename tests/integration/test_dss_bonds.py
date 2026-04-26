@@ -61,3 +61,47 @@ def test_dss_bonds_upsert(clean_db, input_dir, db):
         assert cur.fetchone()[0] == 1
         cur.execute("SELECT security_description FROM lseg_dss_bonds WHERE isin='SG123'")
         assert cur.fetchone()[0] == "v2"
+
+def test_dss_bonds_idempotent_rerun(clean_db, input_dir, db):
+    csv = (
+        "ISIN,Instrument ID,Instrument ID Type,RIC,Ticker,Security Description,"
+        "Instrument Full Name - ESMA,Security Source,Asset ID,Asset Type,"
+        "Asset Type Description,Currency Code,Issuer Name,Issuer LEI,Issuer Short Name\n"
+        "SG123,ID1,CHR,RIC1,T1,v1,Full1,SRC1,AID1,TYPE1,DESC1,SGD,Issuer1,LEI1,Short1\n"
+    )
+    file_name = "SG_HK_Bonds_20260420 070012.csv"
+    with open(os.path.join(input_dir, file_name), "w") as f:
+        f.write(csv)
+    
+    # First run
+    j1 = trigger_job(business_date="20260420")
+    assert wait_for_job(j1) == "COMPLETED"
+
+    # Second run (should be skipped by audit)
+    j2 = trigger_job(business_date="20260420")
+    assert wait_for_job(j2) == "COMPLETED"
+
+    with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM lseg_file_audit WHERE file_name=%s", (file_name,))
+        assert cur.fetchone()[0] == 1  # Only one record in audit means second was skipped early
+
+def test_dss_bonds_skips_ric_and_notes(clean_db, input_dir, db):
+    # Valid file
+    with open(os.path.join(input_dir, "SG_HK_Bonds_20260420 070012.csv"), "w") as f:
+        f.write("ISIN,Instrument ID,Instrument ID Type,RIC,Ticker,Security Description\nSG1,ID1,CHR,R1,T1,D1\n")
+    
+    # These should be ignored by FileScanner
+    with open(os.path.join(input_dir, "SG_HK_Bonds_20260420 070012.ric.csv"), "w") as f:
+        f.write("Some RIC data\n")
+    with open(os.path.join(input_dir, "SG_HK_Bonds_20260420 070012.csv.notes.txt"), "w") as f:
+        f.write("Some notes\n")
+
+    job = trigger_job(business_date="20260420")
+    assert wait_for_job(job) == "COMPLETED"
+
+    with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM lseg_file_audit")
+        assert cur.fetchone()[0] == 1  # Only the valid .csv should have an audit record
+        cur.execute("SELECT file_name FROM lseg_file_audit")
+        assert cur.fetchone()[0] == "SG_HK_Bonds_20260420 070012.csv"
+

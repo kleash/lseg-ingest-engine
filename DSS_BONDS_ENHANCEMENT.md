@@ -30,3 +30,10 @@ This document tracks the progress of the DSS Bonds (`SG_HK_Bonds`) ingestion fea
     - [x] Add integration tests for DSS Bonds [DONE]
     - [x] Verification 1: Cleanup + Smoke Test [DONE]
     - [x] Verification 2: Cleanup + Full End-to-End Test (All files) [DONE]
+
+- [x] **Task 7: Post-Implementation Refinement & Bug Fixes**
+    - [x] Fix greedy `BONDS_CSV_PATTERN` in `FileScanner.java` [DONE]
+    - [x] Robust date extraction in `CsvFileParser.java` [DONE]
+    - [x] Cleanup unused imports and style improvements [DONE]
+    - [x] Fill unit test coverage gaps (FileScanner, CsvFileParser, SqlBuilder) [DONE]
+    - [x] Fill integration test coverage gaps (Idempotency, Skip files) [DONE]

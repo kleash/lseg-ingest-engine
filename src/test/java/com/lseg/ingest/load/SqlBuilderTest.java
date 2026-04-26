@@ -32,5 +32,18 @@ class SqlBuilderTest {
         assertEquals("UPDATE lseg_orgs SET is_deleted = 1 WHERE entity_id = ?", SqlBuilder.delete(Target.ORGS));
         assertEquals("UPDATE lseg_assets SET is_deleted = 1 WHERE asset_id = ?", SqlBuilder.delete(Target.ASSETS));
         assertEquals("UPDATE lseg_quotes SET is_deleted = 1 WHERE asset_id = ? AND quote_id = ?", SqlBuilder.delete(Target.QUOTES));
+        assertEquals("UPDATE lseg_dss_bonds SET is_deleted = 1 WHERE isin = ? AND instrument_id = ? AND instrument_id_type = ? AND ric = ?", SqlBuilder.delete(Target.DSS_BONDS));
+    }
+
+    @Test
+    void upsertDssBonds() {
+        var cols = TargetSchema.intersect(Target.DSS_BONDS,
+                Set.of("ISIN", "Instrument ID", "Instrument ID Type", "RIC", "Ticker"));
+        String sql = SqlBuilder.upsert(Target.DSS_BONDS, cols);
+        assertTrue(sql.contains("INSERT INTO lseg_dss_bonds"));
+        assertTrue(sql.contains("ON DUPLICATE KEY UPDATE"));
+        String dupClause = sql.substring(sql.indexOf("ON DUPLICATE"));
+        assertFalse(dupClause.contains("isin=VALUES(isin)"));
+        assertTrue(dupClause.contains("ticker=VALUES(ticker)"));
     }
 }

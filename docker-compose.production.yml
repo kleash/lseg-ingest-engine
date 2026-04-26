@@ -50,6 +50,7 @@ services:
     volumes:
       - /Users/sa/Downloads/LSEG/20260425:/data/20260425:ro
       - /Users/sa/Downloads/LSEG/20260426:/data/20260426:ro
+      - /Users/sa/Downloads/LSEG/dss-bonds:/data/bonds:ro
 
   ingest2:
     build: .
@@ -71,3 +72,4 @@ services:
     volumes:
       - /Users/sa/Downloads/LSEG/20260425:/data/20260425:ro
       - /Users/sa/Downloads/LSEG/20260426:/data/20260426:ro
+      - /Users/sa/Downloads/LSEG/dss-bonds:/data/bonds:ro

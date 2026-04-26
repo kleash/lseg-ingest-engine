@@ -28,7 +28,7 @@ public class FileScanner {
             "^(?<dataset>[A-Za-z0-9_\\-]+)\\.(?<kind>INT|REF)\\.(?<feed>[A-Za-z0-9]+)\\.(?<date>\\d{8})\\.(?<seq>\\d+)\\.\\d+\\.\\d+\\.txt\\.zip$");
 
     private static final Pattern BONDS_CSV_PATTERN = Pattern.compile(
-            "^SG_HK_Bonds_(?<date>\\d{8}).*\\.csv$");
+            "^SG_HK_Bonds_(?<date>\\d{8})[^.]*\\.csv$");
 
     private final IngestProperties props;
 

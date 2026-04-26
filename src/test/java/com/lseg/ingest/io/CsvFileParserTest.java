@@ -55,4 +55,13 @@ class CsvFileParserTest {
         parser.initialize(1);
         assertEquals("20260501", parser.metadata().businessDate());
     }
+
+    @Test
+    void testShortFilename() throws Exception {
+        String content = "ISIN\nSG123\n";
+        // Filename too short to contain date pattern or reach old offset
+        CsvFileParser parser = new CsvFileParser(new BufferedReader(new StringReader(content)), "Bonds.csv");
+        parser.initialize(1);
+        assertEquals("99991231", parser.metadata().businessDate());
+    }
 }

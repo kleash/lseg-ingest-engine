@@ -57,6 +57,12 @@ class FileScannerTest {
     }
 
     @Test
+    void rejectsBondsRicAndNotes() {
+        assertNull(scanner.classify(Path.of("/x"), "SG_HK_Bonds_20260420 070012.ric.csv"));
+        assertNull(scanner.classify(Path.of("/x"), "SG_HK_Bonds_20260420 070012.csv.notes.txt"));
+    }
+
+    @Test
     void rejectsUnknownDataset() {
         assertNull(scanner.classify(Path.of("/x"), "Reference-INT-EQUI-AMEQUQ-1-1-1.INT.25723.20260425.1.1.1.txt.zip")
                 != null ? null : null /* placeholder */);
