@@ -34,7 +34,11 @@ public class FileScanner {
     }
 
     public List<IngestFile> scan() throws IOException {
-        Path dir = Paths.get(props.getInputDir());
+        return scan(props.getInputDir());
+    }
+
+    public List<IngestFile> scan(String inputDir) throws IOException {
+        Path dir = Paths.get(inputDir);
         if (!Files.isDirectory(dir)) {
             throw new IOException("Input directory not found: " + dir);
         }

@@ -27,8 +27,9 @@ public class FileAuditDao {
 
     public Set<String> loadSuccessFileNames() {
         List<String> names = jdbc.queryForList(
-                "SELECT file_name FROM lseg_file_audit WHERE status = '" + AUDIT_SUCCESS + "' " +
-                        "AND finished_at >= (CURRENT_DATE - INTERVAL 1 MONTH)", String.class);
+                "SELECT file_name FROM lseg_file_audit WHERE status = ? " +
+                        "AND finished_at >= (CURRENT_DATE - INTERVAL 1 MONTH)",
+                String.class, AUDIT_SUCCESS);
         return new HashSet<>(names);
     }
 

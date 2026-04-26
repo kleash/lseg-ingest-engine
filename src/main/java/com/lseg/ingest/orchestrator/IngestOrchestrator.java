@@ -91,13 +91,14 @@ public class IngestOrchestrator {
             // 4. Retrieve job's stored values (Date and Input Directory).
             String businessDate = jobDao.getBusinessDate(jobId);
             String jobDir = jobDao.getInputDir(jobId);
-            if (jobDir != null && !jobDir.isEmpty() && !jobDir.equals(props.getInputDir())) {
-                log.info("Job {} inputDir={} overrides config inputDir={}", jobId, jobDir, props.getInputDir());
-                props.setInputDir(jobDir);
+            String effectiveInputDir = (jobDir != null && !jobDir.isEmpty())
+                    ? jobDir : props.getInputDir();
+            if (!effectiveInputDir.equals(props.getInputDir())) {
+                log.info("Job {} inputDir={} overrides config inputDir={}", jobId, effectiveInputDir, props.getInputDir());
             }
 
             // 5. Look at the folder and parse file names into Java objects.
-            List<IngestFile> all = scanner.scan();
+            List<IngestFile> all = scanner.scan(effectiveInputDir);
             
             // 6. VALIDATION/IDEMPOTENCY: Query the database to find files we've already successfully finished.
             Set<String> alreadyDone = audit.loadSuccessFileNames();
