@@ -166,6 +166,8 @@ The Hikari runtime pool also enables `connectionTestQuery=SELECT 1`, `validation
 
 ## Quick start (Docker Compose)
 
+### Single instance (developer / test)
+
 ```bash
 # 1. wipe any existing state and bring up DB + app
 docker compose down -v
@@ -189,10 +191,51 @@ FROM lseg_file_audit GROUP BY target_table, status;
 SQL
 ```
 
-Bench result on the production drop (268 files / 28 M declared rows, single instance, MariaDB 11 in Docker on macOS):
+### Two-instance production cluster (separate date directories)
 
-* Cold run: **179 s** wall time, 0 failures, 0 sanity skips.
-* Warm rerun (idempotency): **0 s** — every file already SUCCESS in audit.
+`docker-compose.production.yml` brings up two ingest nodes sharing one MariaDB. Both mount both date directories so any node can process any job regardless of which instance received the API trigger call.
+
+```bash
+# 1. tear down and start fresh
+docker compose -f docker-compose.production.yml down -v
+docker compose -f docker-compose.production.yml up -d --build
+
+# 2. trigger jobs — one per date, on separate nodes
+curl -s -X POST 'http://localhost:8081/api/jobs/trigger?businessDate=20260425&inputDir=/data/20260425'
+curl -s -X POST 'http://localhost:8082/api/jobs/trigger?businessDate=20260426&inputDir=/data/20260426'
+
+# 3. monitor — the cluster lock serialises; Job 2 waits while Job 1 runs
+docker compose -f docker-compose.production.yml logs -f ingest1 ingest2
+
+# 4. DB health check (run against mariadb container)
+docker compose -f docker-compose.production.yml exec -T mariadb \
+  mariadb -uroot -prootpw lseg -e "
+    SELECT id, status, business_date, node_id,
+           TIMESTAMPDIFF(SECOND,started_at,COALESCE(finished_at,NOW())) elapsed_s
+    FROM lseg_jobs ORDER BY id;
+    SELECT target_table, kind, status, COUNT(*) files,
+           SUM(parsed_rows) parsed, SUM(inserted_rows) inserted, SUM(skipped_rows) skipped
+    FROM lseg_file_audit GROUP BY 1,2,3 ORDER BY 1,2,3;"
+```
+
+### Three-instance soak / integration test cluster
+
+```bash
+mkdir -p test-input/inst{1,2,3}
+docker compose -f docker-compose.test.yml up -d --build
+# ingest1 on :8081, ingest2 on :8082, ingest3 on :8083
+# stage synthetic fixtures into test-input/inst{1,2,3} and trigger via respective ports
+```
+
+Production bench results (2026-04-26, 2-instance cluster, MariaDB 11 in Docker on macOS, 256 GB VM disk):
+
+| Run | Date | Files | Parsed rows | Duration | Failures |
+|-----|------|-------|-------------|----------|---------|
+| Job 1 (cold INT + DELTA) | 20260425 | 464 | 49,323,000 | **479 s** | 0 |
+| Job 2 (INT + DELTA on top) | 20260426 | 93 | 10,347,682 | **64 s** | 0 |
+| Warm rerun (idempotency) | either | any | — | **0 s** | 0 |
+
+Quotes INT throughput is 92 K rows/s parsed; effective insert rate is 10.7 % because the RIC caret filter drops ~89 % of EU warrants index rows. Assets INT inserts 100 % of parsed rows at 17.7 K rows/s. See [`INGESTION_RUN_REPORT.md`](./INGESTION_RUN_REPORT.md) for the full reconciliation and timeline.
 
 ---
 

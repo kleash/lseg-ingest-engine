@@ -4,14 +4,34 @@ This document is the operational runbook for the LSEG ingestion service. It assu
 
 ---
 
-## 0. Test stack (multi-instance soak)
+## 0. Compose stacks
 
-A dedicated `docker-compose.test.yml` brings up 3 ingest containers + 1 MariaDB with health-gated startup (ingest2/3 wait until ingest1's actuator health endpoint reports up so Liquibase isn't applied concurrently from three nodes against a fresh schema). Ports 8081/8082/8083 are exposed for direct API hits per node.
+### Production two-instance cluster (`docker-compose.production.yml`)
+
+Both ingest nodes mount both date directories (`/data/20260425`, `/data/20260426`) so the explicit `inputDir` parameter in the trigger call routes each job to the correct data, regardless of which node wins the cluster lock. ingest1 is health-checked; ingest2 starts only after ingest1 is healthy (guarantees Liquibase runs once).
+
+```bash
+docker compose -f docker-compose.production.yml down -v
+docker compose -f docker-compose.production.yml up -d --build
+
+# Trigger one job per date on separate nodes
+curl -X POST 'http://localhost:8081/api/jobs/trigger?businessDate=20260425&inputDir=/data/20260425'
+curl -X POST 'http://localhost:8082/api/jobs/trigger?businessDate=20260426&inputDir=/data/20260426'
+
+# Monitor
+docker compose -f docker-compose.production.yml logs -f ingest1 ingest2
+```
+
+> **Docker disk sizing**: The full LSEG dataset produces ~10 GB of DB data. Docker Desktop's VM virtual disk must be ≥ 128 GB (recommended 256 GB) to avoid `The table '...' is full` errors mid-ingestion.
+
+### Test three-instance soak stack (`docker-compose.test.yml`)
+
+Brings up 3 ingest containers + 1 MariaDB with health-gated startup (ingest2/3 wait until ingest1's actuator health endpoint reports up so Liquibase isn't applied concurrently from three nodes against a fresh schema). Ports 8081/8082/8083 are exposed for direct API hits per node.
 
 ```bash
 mkdir -p test-input/inst{1,2,3}
 docker compose -f docker-compose.test.yml up -d --build
-# stage files into test-input/inst1, trigger via :8081, etc.
+# stage files into test-input/inst{1,2,3} and trigger via :8081/:8082/:8083
 ```
 
 ---

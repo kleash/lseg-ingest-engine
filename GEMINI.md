@@ -55,6 +55,13 @@ docker compose down -v
 docker compose up -d --build
 curl -X POST 'http://localhost:8080/api/jobs/trigger?businessDate=20260425&inputDir=/data'
 
+# Two-instance production cluster (separate date dirs, explicit inputDir per job)
+docker compose -f docker-compose.production.yml down -v
+docker compose -f docker-compose.production.yml up -d --build
+curl -X POST 'http://localhost:8081/api/jobs/trigger?businessDate=20260425&inputDir=/data/20260425'
+curl -X POST 'http://localhost:8082/api/jobs/trigger?businessDate=20260426&inputDir=/data/20260426'
+# Cluster lock serialises the two jobs; Job 2 waits until Job 1 completes
+
 # Multi-instance test stack (3 ingest containers, health-gated startup)
 docker compose -f docker-compose.test.yml up -d --build
 ```
@@ -92,4 +99,4 @@ docker compose -f docker-compose.test.yml up -d --build
 - `last_heartbeat_at >= NOW() - INTERVAL 60 SECOND` for any RUNNING job (default 30 s heartbeat × 2).
 - `node_id` of the RUNNING job matches the container that most recently logged `ClusterLock 'lseg-ingest-cluster' acquired`.
 
-See `README.md`, `SOP.md`, and `CORNER_CASES.md` for full detail.
+See `README.md`, `SOP.md`, `CORNER_CASES.md`, and `INGESTION_RUN_REPORT.md` for full detail.

@@ -60,7 +60,31 @@ Runs against the live `docker compose` stack with synthetic small fixtures and a
 
 ---
 
-## Planned — Multi-instance soak test (manual)
+## Verified — Multi-instance production run (2026-04-26)
+
+> Executed against the full production dataset (20260425 + 20260426) using `docker-compose.production.yml` (2 ingest containers + 1 MariaDB). All cluster-lock invariants held throughout. See [`INGESTION_RUN_REPORT.md`](./INGESTION_RUN_REPORT.md) for the complete reconciliation.
+
+### What was verified
+
+| Assertion | Result |
+|-----------|--------|
+| `COUNT(*) FROM lseg_jobs WHERE status='RUNNING'` ≤ 1 at all times | **PASS** |
+| Job 2 stayed QUEUED while Job 1 was RUNNING | **PASS** — logs confirmed repeated `Cluster lock unavailable; another node is running. Leaving job 2 QUEUED.` |
+| `node_id` of RUNNING job matched the container whose log showed `ClusterLock acquired` | **PASS** |
+| All 557 source files accounted for in audit (0 missed, 0 phantom) | **PASS** |
+| `declared_rows = parsed_rows` for every file | **PASS** |
+| `parsed_rows = inserted_rows + skipped_rows` for every file | **PASS** |
+| `inserted_rows = ins_count + upd_count + del_count` for every DELTA file | **PASS** |
+| 0 FAILED files, 0 SKIPPED_SANITY files | **PASS** |
+| Jobs ran serially: `job2.started_at >= job1.finished_at` | **PASS** — Job 1 finished at 06:42:10; Job 2 started at 06:42:10 |
+
+### Note on scope vs. the original planned test
+
+The planned test below calls for three ingest containers and synthetic data. The production run used two containers and real LSEG data. The synthetic 3-node plan (below) remains useful for automated regression; the production run provides evidence of correctness at scale.
+
+---
+
+## Planned — Three-instance soak test (synthetic, not yet automated)
 
 > Goal: prove the cluster lock serialises three concurrent ingest containers fed from independent input directories. Do not rely solely on row counts — monitor logs, DB, and API responses continuously throughout.
 
