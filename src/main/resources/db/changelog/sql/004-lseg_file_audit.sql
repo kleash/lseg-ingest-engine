@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS lseg_file_audit (
     error_message TEXT,
     started_at TIMESTAMP(3) NULL,
     finished_at TIMESTAMP(3) NULL,
-    UNIQUE KEY uniq_file_audit_file_name (file_name)
+    UNIQUE KEY uniq_file_audit_file_name (file_name),
+    KEY idx_file_audit_status_date (status, finished_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- rollback DROP TABLE lseg_file_audit;

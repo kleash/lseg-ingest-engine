@@ -2,9 +2,12 @@ package com.lseg.ingest.orchestrator;
 
 import com.lseg.ingest.audit.JobDao;
 import com.lseg.ingest.config.IngestProperties;
+import org.apache.coyote.BadRequestException;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+
+import static com.lseg.ingest.Constants.*;
 
 /**
  * Job control endpoints. NOTE: not yet authenticated — security is a later phase.
@@ -27,10 +30,13 @@ public class JobController {
     @PostMapping("/trigger")
     public Map<String, Object> trigger(@RequestParam(required = false) String businessDate,
                                        @RequestParam(required = false) String inputDir) {
-        String date = (businessDate != null && !businessDate.isEmpty()) ? businessDate : props.getBusinessDate();
+        if (businessDate == null || businessDate.isEmpty()){
+            return Map.of("result", "failed, business date is required");
+        }
+
         String dir = (inputDir != null && !inputDir.isEmpty()) ? inputDir : props.getInputDir();
-        long jobId = jobDao.queueJob(date, dir);
-        return Map.of("jobId", jobId, "status", "QUEUED", "businessDate", date, "inputDir", dir);
+        long jobId = jobDao.queueJob(businessDate, dir);
+        return Map.of("jobId", jobId, "status", STATUS_QUEUED, "businessDate", businessDate, "inputDir", dir);
     }
 
     /** Stop one specific job by id. */
@@ -45,13 +51,9 @@ public class JobController {
     }
 
     @PostMapping("/restart")
-    public Map<String, Object> restart(@RequestParam(required = false) Long jobId) {
-        if (jobId != null) {
-            jobDao.updateStatus(jobId, "QUEUED", null);
-            return Map.of("jobId", jobId, "status", "QUEUED");
-        }
-        long newId = jobDao.queueJob(props.getBusinessDate(), props.getInputDir());
-        return Map.of("jobId", newId, "status", "QUEUED");
+    public Map<String, Object> restart(@RequestParam Long jobId) {
+        jobDao.updateStatus(jobId, STATUS_QUEUED, null);
+        return Map.of("jobId", jobId, "status", STATUS_QUEUED);
     }
 
     @GetMapping("/status")

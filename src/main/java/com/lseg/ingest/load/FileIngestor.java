@@ -24,6 +24,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static com.lseg.ingest.Constants.*;
+
 /**
  * Loads a single LSEG file into the target table.
  *
@@ -56,22 +58,21 @@ public class FileIngestor {
         this.registry = registry;
     }
 
-    public void ingest(IngestFile file, long jobId) throws Exception {
-        MDC.put("file", file.fileName());
-        MDC.put("jobId", String.valueOf(jobId));
+    public void ingest(IngestFile file, long jobId, String businessDate) throws Exception {
+        MDC.put(MDC_FILE, file.fileName());
+        MDC.put(MDC_JOB_ID, String.valueOf(jobId));
         try {
             SqlRetry.withRetry(props.getRetry(), "ingest:" + file.fileName(), () -> {
-                doIngest(file, jobId);
+                doIngest(file, jobId, businessDate);
                 return null;
             });
         } finally {
-            MDC.remove("file");
-            MDC.remove("jobId");
+            MDC.remove(MDC_FILE);
+            MDC.remove(MDC_JOB_ID);
         }
     }
 
-    private void doIngest(IngestFile file, long jobId) throws Exception {
-        String businessDate = props.getBusinessDate();
+    private void doIngest(IngestFile file, long jobId, String businessDate) throws Exception {
         log.info("Ingestion started: file={} target={} kind={}", file.fileName(), file.target(), file.kind());
 
         Charset charset = Charset.forName(props.getCharset());
@@ -88,7 +89,7 @@ public class FileIngestor {
                 String msg = "No overlapping columns found. File headers: " + parser.headerColumns()
                         + ". Expected for " + file.target() + ": " + TargetSchema.schemaSummary(file.target());
                 log.error("ABORT {}: {}", file.fileName(), msg);
-                audit.markFinished(file, "FAILED", 0, 0, 0, 0, 0, 0, truncate(msg));
+                audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, truncate(msg));
                 return;
             }
             log.info("Mapped {}/{} columns for {}", cols.size(), TargetSchema.columnsFor(file.target()).size(), file.fileName());
@@ -106,8 +107,8 @@ public class FileIngestor {
                 keySrcIdx[i] = headerIdx.getOrDefault(target.uniqueKeySourceHeaders.get(i), -1);
             }
 
-            int actionIdx = headerIdx.getOrDefault("Action", -1);
-            int ricIdx = headerIdx.getOrDefault("RIC", -1);
+            int actionIdx = headerIdx.getOrDefault(COL_ACTION, -1);
+            int ricIdx = headerIdx.getOrDefault(COL_RIC, -1);
             boolean applyRicFilter = props.isRicCaretFilter()
                     && file.kind() == Kind.INT
                     && target == Target.QUOTES
@@ -120,7 +121,6 @@ public class FileIngestor {
             int parsed = 0, skipped = 0, filterSkips = 0;
             int insCount = 0, updCount = 0, delCount = 0;
             String errorMessage = null;
-            int maxSkipsPerFile = props.getResilience().getMaxSkippedRowsPerFile();
             int cancelCheckEvery = Math.max(1, props.getCancel().getCheckRows());
 
             try (Connection conn = ds.getConnection()) {
@@ -149,25 +149,42 @@ public class FileIngestor {
                     // 'U' -> upsert, 'D' -> delete. Track current batch side so we flush on flip.
                     char activeSide = 0; // 0=none, 'U'=upsert, 'D'=delete
 
+                    // 5. Read the file line by line until the end.
+                    // The parser handles transparent ZIP decompression and pipe-splitting.
                     String[] row;
                     while ((row = parser.nextRow()) != null) {
                         parsed++;
-                        if ((parsed % cancelCheckEvery) == 0 && jobDao.isStopped(jobId)) {
-                            throw new InterruptedException("Stop signaled mid-file at row " + parsed);
+
+                        // 6. Check for stop signal.
+                        // We poll the database every N rows to see if a human operator requested a STOP.
+                        if ((parsed % cancelCheckEvery) == 0) {
+                            if (jobDao.isStopped(jobId)) {
+                                throw new InterruptedException("Stop signaled mid-file at row " + parsed);
+                            }
+                            log.info("Progress: parsed={}, inserted={}, skipped={}, filterSkips={} for {}",
+                                    parsed, (upserter.succeeded() + deleter.succeeded()), (upserter.skipped() + deleter.skipped()), filterSkips, file.fileName());
                         }
 
+                        // 7. Apply RIC Caret Filter.
+                        // Some feeds contain internal records marked with '^' which we must ignore.
                         if (applyRicFilter && ricFilter.shouldSkip(row)) {
                             filterSkips++;
                             continue;
                         }
 
-                        char action = (actionIdx >= 0 && actionIdx < row.length && row[actionIdx] != null && !row[actionIdx].isEmpty())
-                                ? row[actionIdx].charAt(0) : 'I';
+                        // 8. Determine Action (Insert/Update vs Delete).
+                        // Reference data uses 'I', 'U', or 'D'. We default to 'I' if unknown.
+                        String actionStr = (actionIdx >= 0 && actionIdx < row.length && row[actionIdx] != null && !row[actionIdx].isEmpty())
+                                ? row[actionIdx] : ACTION_INSERT;
+                        char action = actionStr.charAt(0);
 
+                        // Key value for logging/mapping.
                         String firstKey = (keySrcIdx.length > 0 && keySrcIdx[0] >= 0 && keySrcIdx[0] < row.length)
                                 ? row[keySrcIdx[0]] : null;
 
-                        if (action == 'D') {
+                        if (action == ACTION_DELETE.charAt(0)) {
+                            // 9. Process Delete.
+                            // If the previous row was an Upsert, we must flush the database buffer now.
                             if (activeSide == 'U') {
                                 upserter.flush();
                                 activeSide = 0;
@@ -181,7 +198,10 @@ public class FileIngestor {
                             deleter.add(new PendingRow(keyVals, parser.currentLine(), firstKey));
                             activeSide = 'D';
                         } else {
-                            if (action == 'U') updCount++; else insCount++;
+                            // 10. Process Upsert (Insert or Update).
+                            if (action == ACTION_UPDATE.charAt(0)) updCount++; else insCount++;
+
+                            // If the previous row was a Delete, flush that buffer first to preserve order.
                             if (activeSide == 'D') {
                                 deleter.flush();
                                 activeSide = 0;
@@ -194,12 +214,10 @@ public class FileIngestor {
                             upserter.add(new PendingRow(vals, parser.currentLine(), firstKey));
                             activeSide = 'U';
                         }
-
-                        if (upserter.skipped() + deleter.skipped() + skipped > maxSkipsPerFile) {
-                            throw new RuntimeException("maxSkippedRowsPerFile exceeded: " + (upserter.skipped() + deleter.skipped() + skipped));
-                        }
                     }
 
+                    // 11. Final Flush.
+                    // Send any remaining rows in the buffers to the database.
                     if (activeSide == 'D') {
                         upserter.flush();
                         deleter.flush();
@@ -207,6 +225,9 @@ public class FileIngestor {
                         deleter.flush();
                         upserter.flush();
                     }
+
+                    // 12. Commit.
+                    // Actually finalize the transaction in MariaDB.
                     conn.commit();
 
                     int inserted = upserter.succeeded();
@@ -215,23 +236,23 @@ public class FileIngestor {
                     int totalSkipped = errorSkips + filterSkips;
 
                     String t = target.name();
-                    registry.counter("ingest.rows.parsed", "target", t).increment(parsed);
-                    registry.counter("ingest.rows.inserted", "target", t).increment(inserted);
-                    registry.counter("ingest.rows.skipped.error", "target", t).increment(errorSkips);
-                    registry.counter("ingest.rows.skipped.filter", "target", t).increment(filterSkips);
-                    registry.counter("ingest.rows.ops", "target", t, "op", "I").increment(insCount);
-                    registry.counter("ingest.rows.ops", "target", t, "op", "U").increment(updCount);
-                    registry.counter("ingest.rows.ops", "target", t, "op", "D").increment(delCount);
+                    registry.counter(METRIC_ROWS_PARSED, TAG_TARGET, t).increment(parsed);
+                    registry.counter(METRIC_ROWS_INSERTED, TAG_TARGET, t).increment(inserted + deleted);
+                    registry.counter(METRIC_ROWS_SKIPPED_ERROR, TAG_TARGET, t).increment(errorSkips);
+                    registry.counter(METRIC_ROWS_SKIPPED_FILTER, TAG_TARGET, t).increment(filterSkips);
+                    registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_INSERT).increment(insCount);
+                    registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_UPDATE).increment(updCount);
+                    registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_DELETE).increment(delCount);
 
-                    audit.markFinished(file, "SUCCESS", parsed, inserted, totalSkipped, insCount, updCount, delCount, null);
+                    audit.markFinished(file, AUDIT_SUCCESS, parsed, inserted + deleted, totalSkipped, insCount, updCount, delCount, null);
                     log.info("FINISHED {}: parsed={} inserted={} ins={} upd={} del={} error_skips={} filter_skips={} declared={}",
-                            file.fileName(), parsed, inserted, insCount, updCount, delCount, errorSkips, filterSkips, declared);
+                            file.fileName(), parsed, inserted + deleted, insCount, updCount, delCount, errorSkips, filterSkips, declared);
 
                 } catch (Exception e) {
                     conn.rollback();
                     errorMessage = e.getClass().getSimpleName() + ": " + e.getMessage();
                     log.error("TERMINATED {}: {}. Transaction rolled back.", file.fileName(), errorMessage);
-                    audit.markFinished(file, "FAILED", parsed, 0, skipped + filterSkips, insCount, updCount, delCount, truncate(errorMessage));
+                    audit.markFinished(file, AUDIT_FAILED, parsed, 0, skipped + filterSkips, insCount, updCount, delCount, truncate(errorMessage));
                     throw e;
                 }
             }

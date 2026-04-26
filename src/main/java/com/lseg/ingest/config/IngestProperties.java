@@ -9,7 +9,6 @@ public class IngestProperties {
 
     private String inputDir;
     private String archiveDir;
-    private String businessDate;
     private String charset = "UTF-8";
     private List<String> skipPatterns;
     private boolean ricCaretFilter = true;
@@ -23,10 +22,9 @@ public class IngestProperties {
 
     public String getInputDir() { return inputDir; }
     public void setInputDir(String v) { this.inputDir = v; }
+
     public String getArchiveDir() { return archiveDir; }
     public void setArchiveDir(String v) { this.archiveDir = v; }
-    public String getBusinessDate() { return businessDate; }
-    public void setBusinessDate(String v) { this.businessDate = v; }
     public String getCharset() { return charset; }
     public void setCharset(String v) { this.charset = v; }
     public List<String> getSkipPatterns() { return skipPatterns; }

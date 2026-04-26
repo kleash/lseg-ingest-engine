@@ -60,11 +60,14 @@ def db():
 
 @pytest.fixture
 def clean_db(db):
-    """Truncate all data tables and audit/jobs before each test."""
+    """Clean all data tables and audit/jobs before each test."""
     with db.cursor() as cur:
         cur.execute("SET FOREIGN_KEY_CHECKS=0")
-        for t in ("lseg_orgs", "lseg_assets", "lseg_quotes", "lseg_file_audit", "lseg_jobs"):
+        for t in ("lseg_orgs", "lseg_assets", "lseg_quotes"):
             cur.execute(f"TRUNCATE TABLE {t}")
+        # Use DELETE for audit and jobs to preserve auto-increment across tests
+        for t in ("lseg_file_audit", "lseg_jobs"):
+            cur.execute(f"DELETE FROM {t}")
         cur.execute("SET FOREIGN_KEY_CHECKS=1")
     yield db
 
@@ -153,3 +156,18 @@ def wait_for_job(job_id, timeout=120, poll=2):
 
 def stop_job(job_id):
     requests.post(f"{APP_URL}/api/jobs/stop", params={"jobId": job_id}).raise_for_status()
+
+
+def get_logs(lines=100):
+    """Retrieve the last N lines of logs from the ingest container."""
+    import subprocess
+    # Find the container name for the 'ingest' service
+    try:
+        cmd = ["docker", "compose", "ps", "-q", "ingest"]
+        container_id = subprocess.check_output(cmd).decode().strip()
+        if not container_id:
+            return ""
+        cmd = ["docker", "logs", "--tail", str(lines), container_id]
+        return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+    except Exception as e:
+        return f"Error getting logs: {e}"

@@ -7,6 +7,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import static com.lseg.ingest.Constants.*;
+
 /**
  * Periodically marks RUNNING jobs FAILED if their heartbeat is older than the configured
  * staleJobTimeoutSeconds (default 3 hours). Provides automatic recovery for nodes that

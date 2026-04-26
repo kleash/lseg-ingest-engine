@@ -10,6 +10,8 @@ import java.net.InetAddress;
 import java.util.Optional;
 import java.util.UUID;
 
+import static com.lseg.ingest.Constants.*;
+
 @Component
 public class JobWorker {
 
@@ -26,7 +28,7 @@ public class JobWorker {
         log.info("JobWorker started with nodeId={}", nodeId);
     }
 
-    @Scheduled(fixedDelay = 10000) // Poll every 10 seconds
+    @Scheduled(fixedDelay = 1000) // Poll every 1 second
     public void pollAndExecute() {
         Optional<Long> jobIdOpt;
         try {
@@ -42,15 +44,15 @@ public class JobWorker {
         try {
             boolean ran = orchestrator.run(jobId);
             if (!ran) {
-                log.info("Job {} not run on this tick (cluster lock unavailable); reverting to QUEUED", jobId);
-                jobDao.updateStatus(jobId, "QUEUED", null);
+                // If it didn't run, orchestrator already rolled it back to QUEUED or it was stopped.
                 return;
             }
-            // updateStatus is STOPPED-aware: it won't overwrite a stop.
-            jobDao.updateStatus(jobId, "COMPLETED", null);
+            // If we get here, orchestrator.run() returned true, meaning it finished successfully.
+            // Note: updateStatus is STOPPED-aware; it won't overwrite a STOPPED status.
+            jobDao.updateStatus(jobId, STATUS_COMPLETED, null);
         } catch (Exception e) {
-            log.error("Job {} failed", jobId, e);
-            jobDao.updateStatus(jobId, "FAILED", truncate(e.getClass().getSimpleName() + ": " + e.getMessage()));
+            log.error("Job {} failed with exception: {}", jobId, e.getMessage(), e);
+            jobDao.updateStatus(jobId, STATUS_FAILED, truncate(e.getClass().getSimpleName() + ": " + e.getMessage()));
         }
     }
 
@@ -61,7 +63,8 @@ public class JobWorker {
 
     private String generateNodeId() {
         try {
-            return InetAddress.getLocalHost().getHostName() + "-" + UUID.randomUUID().toString().substring(0, 8);
+            String host = InetAddress.getLocalHost().getHostName();
+            return host + "-" + System.currentTimeMillis() % 100000 + "-" + UUID.randomUUID().toString().substring(0, 4);
         } catch (Exception e) {
             return "unknown-" + UUID.randomUUID().toString().substring(0, 8);
         }

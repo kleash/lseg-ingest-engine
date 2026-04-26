@@ -9,6 +9,8 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.lseg.ingest.Constants.*;
+
 /**
  * Cheap pre-ingest header check: opens the zip, locates header, verifies
  *   - metadata kind matches filename kind
@@ -28,7 +30,7 @@ public class FileSanityCheck {
             PipeFileParser.Metadata md = p.metadata();
             if (md == null) return new Result(false, "metadata row missing", null, p.headerColumns());
 
-            String expectedKind = (file.kind() == Kind.INT) ? "INT" : "REF";
+            String expectedKind = (file.kind() == Kind.INT) ? KIND_INT : KIND_REF;
             if (!expectedKind.equals(md.kind()))
                 return new Result(false, "metadata kind=" + md.kind() + " expected=" + expectedKind, md, p.headerColumns());
 

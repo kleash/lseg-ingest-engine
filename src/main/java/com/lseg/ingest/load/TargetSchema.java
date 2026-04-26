@@ -8,6 +8,8 @@ import java.sql.Types;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static com.lseg.ingest.Constants.*;
+
 /**
  * Describes the DB-side schema for a target table: ordered list of (sourceHeader, dbColumn, sqlType, valueParser).
  * Used to build prepared SQL once per (target, fileHeaderColumns) and to bind row values.
@@ -83,7 +85,7 @@ public class TargetSchema {
                 col("Exchange_Code", "exchange_code", Types.VARCHAR, STRING),
                 col("Market_Segment_MIC", "market_segment_mic", Types.VARCHAR, STRING),
                 col("RCS_Code", "rcs_code", Types.VARCHAR, STRING),
-                col("RIC", "ric", Types.VARCHAR, STRING),
+                col(COL_RIC, "ric", Types.VARCHAR, STRING),
                 col("Round_Lot_Size", "round_lot_size", Types.VARCHAR, STRING),
                 col("SEDOL", "sedol", Types.VARCHAR, STRING),
                 col("Strike_Price", "strike_price", Types.VARCHAR, STRING),

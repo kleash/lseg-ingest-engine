@@ -4,9 +4,11 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.util.*;
 
+import static com.lseg.ingest.Constants.*;
+
 /**
  * Parses an LSEG-style pipe-delimited stream:
- *   - Looks for a metadata row of the form  &lt;name&gt;|&lt;INT|REF&gt;|&lt;feed&gt;|&lt;date&gt;|&lt;seq&gt;|&lt;rowCount&gt;|
+ *   - Looks for a metadata row of the form  <name>|<INT|REF>|<feed>|<date>|<seq>|<rowCount>|
  *   - Then locates the header row (the first row containing the "Action" token).
  *   - Tolerates extra leading lines, comments, etc.
  *
@@ -95,7 +97,7 @@ public class PipeFileParser {
         // Rough check: 6 pipe-separated fields, second is INT or REF, fourth looks like date.
         String[] toks = line.split("\\|", -1);
         if (toks.length < 6) return false;
-        if (!toks[1].equals("INT") && !toks[1].equals("REF")) return false;
+        if (!toks[1].equals(KIND_INT) && !toks[1].equals(KIND_REF)) return false;
         return toks[3].matches("\\d{8}");
     }
 
@@ -112,7 +114,7 @@ public class PipeFileParser {
 
     private static boolean looksLikeHeader(String line) {
         // Header rows in LSEG always include "Action" as the first column.
-        if (!line.startsWith("Action|")) return false;
+        if (!line.startsWith(COL_ACTION + "|")) return false;
         // Non-data: header tokens never repeat and are typically alphabetic; data rows after the header begin with single-letter tokens.
         return true;
     }

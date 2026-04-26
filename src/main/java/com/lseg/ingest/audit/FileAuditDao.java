@@ -14,6 +14,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import static com.lseg.ingest.Constants.*;
+
 @Component
 public class FileAuditDao {
 
@@ -25,16 +27,17 @@ public class FileAuditDao {
 
     public Set<String> loadSuccessFileNames() {
         List<String> names = jdbc.queryForList(
-                "SELECT file_name FROM lseg_file_audit WHERE status = 'SUCCESS'", String.class);
+                "SELECT file_name FROM lseg_file_audit WHERE status = '" + AUDIT_SUCCESS + "' " +
+                        "AND finished_at >= (CURRENT_DATE - INTERVAL 1 MONTH)", String.class);
         return new HashSet<>(names);
     }
 
     public void markStarted(IngestFile f, String businessDate, int declaredRows) {
         jdbc.update(
                 "INSERT INTO lseg_file_audit (file_name, dataset, target_table, kind, seq, business_date, declared_rows, status, started_at) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 'STARTED', ?) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, '" + AUDIT_STARTED + "', ?) " +
                         "ON DUPLICATE KEY UPDATE dataset=VALUES(dataset), target_table=VALUES(target_table), kind=VALUES(kind), seq=VALUES(seq), " +
-                        "business_date=VALUES(business_date), declared_rows=VALUES(declared_rows), status='STARTED', started_at=VALUES(started_at), " +
+                        "business_date=VALUES(business_date), declared_rows=VALUES(declared_rows), status='" + AUDIT_STARTED + "', started_at=VALUES(started_at), " +
                         "finished_at=NULL, error_message=NULL, parsed_rows=NULL, inserted_rows=NULL, skipped_rows=NULL, " +
                         "ins_count=0, upd_count=0, del_count=0",
                 f.fileName(),
@@ -62,8 +65,8 @@ public class FileAuditDao {
     public void markSkippedSanity(IngestFile f, String reason, String businessDate) {
         jdbc.update(
                 "INSERT INTO lseg_file_audit (file_name, dataset, target_table, kind, seq, business_date, status, error_message, started_at, finished_at) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, 'SKIPPED_SANITY', ?, ?, ?) " +
-                        "ON DUPLICATE KEY UPDATE status='SKIPPED_SANITY', error_message=VALUES(error_message), finished_at=VALUES(finished_at)",
+                        "VALUES (?, ?, ?, ?, ?, ?, '" + AUDIT_SKIPPED_SANITY + "', ?, ?, ?) " +
+                        "ON DUPLICATE KEY UPDATE status='" + AUDIT_SKIPPED_SANITY + "', error_message=VALUES(error_message), finished_at=VALUES(finished_at)",
                 f.fileName(), f.dataset(), f.target().name().toLowerCase(), f.kind().name(), f.seq(),
                 Date.valueOf(parseBusinessDate(businessDate)), reason,
                 new Timestamp(System.currentTimeMillis()), new Timestamp(System.currentTimeMillis()));
@@ -72,8 +75,8 @@ public class FileAuditDao {
     public void markManualSkip(String fileName, String reason) {
         jdbc.update(
                 "INSERT INTO lseg_file_audit (file_name, status, error_message, finished_at) " +
-                        "VALUES (?, 'SKIPPED', ?, ?) " +
-                        "ON DUPLICATE KEY UPDATE status='SKIPPED', error_message=VALUES(error_message), finished_at=VALUES(finished_at)",
+                        "VALUES (?, '" + AUDIT_SKIPPED + "', ?, ?) " +
+                        "ON DUPLICATE KEY UPDATE status='" + AUDIT_SKIPPED + "', error_message=VALUES(error_message), finished_at=VALUES(finished_at)",
                 fileName, reason, new Timestamp(System.currentTimeMillis()));
     }
 }

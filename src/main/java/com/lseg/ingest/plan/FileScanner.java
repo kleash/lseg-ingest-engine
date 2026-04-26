@@ -12,6 +12,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import static com.lseg.ingest.Constants.*;
+
 /**
  * Scans the input directory and classifies each file as an {@link IngestFile}.
  * Applies skip patterns from config; the audit-based skip is applied by the orchestrator.
@@ -76,7 +78,7 @@ public class FileScanner {
         int seq = Integer.parseInt(m.group("seq"));
         Target target = mapTarget(dataset);
         if (target == null) return null;
-        Kind kind = "INT".equals(kindToken) ? Kind.INT : Kind.DELTA;
+        Kind kind = KIND_INT.equals(kindToken) ? Kind.INT : Kind.DELTA;
         return new IngestFile(path, name, dataset, target, kind, seq);
     }
 

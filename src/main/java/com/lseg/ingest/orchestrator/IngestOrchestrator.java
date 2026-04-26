@@ -23,6 +23,8 @@ import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static com.lseg.ingest.Constants.*;
+
 /**
  * Drives the end-to-end run for one queued job.
  *
@@ -66,33 +68,38 @@ public class IngestOrchestrator {
 
     /** @return true if the run completed (success or failed); false if the cluster lock was unavailable. */
     public boolean run(long jobId) throws Exception {
-        MDC.put("jobId", String.valueOf(jobId));
+        // 1. Setup logging context so every log line shows the current Job ID.
+        MDC.put(MDC_JOB_ID, String.valueOf(jobId));
         Timer.Sample overallSample = Timer.start(registry);
         ScheduledExecutorService heartbeat = null;
+
+        // 2. CONSTRAINT: Acquire a global database lock. 
+        // This ensures that even in a multi-instance cluster, only ONE node processes files at a time.
         try (ClusterLock.Handle lock = clusterLock.tryAcquire()) {
             if (!lock.acquired()) {
                 log.warn("Cluster lock unavailable; another node is running. Leaving job {} QUEUED.", jobId);
                 // Roll job back to QUEUED so it's re-tried on next poll.
-                jobDao.updateStatus(jobId, "QUEUED", null);
+                jobDao.updateStatus(jobId, STATUS_QUEUED, null);
                 return false;
             }
 
+            // 3. Start a background heartbeat. 
+            // If this node crashes, the heartbeat stops, allowing the JobReaper to eventually unlock the job.
             heartbeat = startHeartbeat(jobId);
             checkStop(jobId);
 
-            // Override businessDate / inputDir with the job's stored values, if present.
-            String jobDate = jobDao.getBusinessDate(jobId);
-            if (jobDate != null && !jobDate.isEmpty() && !jobDate.equals(props.getBusinessDate())) {
-                log.info("Job {} businessDate={} overrides config businessDate={}", jobId, jobDate, props.getBusinessDate());
-                props.setBusinessDate(jobDate);
-            }
+            // 4. Retrieve job's stored values (Date and Input Directory).
+            String businessDate = jobDao.getBusinessDate(jobId);
             String jobDir = jobDao.getInputDir(jobId);
             if (jobDir != null && !jobDir.isEmpty() && !jobDir.equals(props.getInputDir())) {
                 log.info("Job {} inputDir={} overrides config inputDir={}", jobId, jobDir, props.getInputDir());
                 props.setInputDir(jobDir);
             }
 
+            // 5. Look at the folder and parse file names into Java objects.
             List<IngestFile> all = scanner.scan();
+            
+            // 6. VALIDATION/IDEMPOTENCY: Query the database to find files we've already successfully finished.
             Set<String> alreadyDone = audit.loadSuccessFileNames();
             List<IngestFile> remaining = new ArrayList<>(all.size());
             for (IngestFile f : all) {
@@ -105,37 +112,44 @@ public class IngestOrchestrator {
             log.info("Production Status - Files: total={} already-ingested={} remaining={}",
                     all.size(), all.size() - remaining.size(), remaining.size());
 
+            // 7. SANITY CHECK: Before doing expensive database work, check the files.
+            // This reads the first 50 lines looking for the correct headers.
             List<IngestFile> good = new ArrayList<>(remaining.size());
             for (IngestFile f : remaining) {
                 checkStop(jobId);
-                FileSanityCheck.Result r = sanity.check(f, props.getBusinessDate());
+                FileSanityCheck.Result r = sanity.check(f, businessDate);
                 if (!r.ok()) {
                     log.warn("CRITICAL SANITY FAIL {}: {}", f.fileName(), r.reason());
-                    audit.markSkippedSanity(f, r.reason(), props.getBusinessDate());
-                    registry.counter("ingest.sanity.failures", "target", f.target().name()).increment();
+                    audit.markSkippedSanity(f, r.reason(), businessDate);
+                    registry.counter(METRIC_SANITY_FAILURES, TAG_TARGET, f.target().name()).increment();
                 } else {
                     good.add(f);
                 }
             }
+            
+            // 8. Organizes the healthy files into an IngestPlan (sorting by Target and Sequence).
             IngestPlan plan = new IngestPlan(good);
             log.info("Ingestion Plan built: {}", plan.summary());
 
+            // 9. PARALLEL EXECUTION: Fire off a separate thread for each target table.
             ExecutorService perTargetPool = Executors.newFixedThreadPool(
                     Math.max(1, props.getThreads().getDeltaTargetsParallel()),
                     daemonThreads("target"));
 
             List<Future<?>> targetFutures = new ArrayList<>();
             for (Target t : Target.values()) {
-                targetFutures.add(perTargetPool.submit(() -> runTarget(t, plan, jobId)));
+                targetFutures.add(perTargetPool.submit(() -> runTarget(t, plan, jobId, businessDate)));
             }
+            
+            // 10. Wait for all target pipelines to finish.
             boolean anyTargetError = false;
             for (Future<?> f : targetFutures) {
                 try {
-                    f.get();
+                    waitWithHeartbeat(f, jobId, "target pipeline");
                 } catch (ExecutionException e) {
                     anyTargetError = true;
                     log.error("Target pipeline failed unexpectedly", e.getCause());
-                    registry.counter("ingest.target.errors").increment();
+                    registry.counter(METRIC_TARGET_ERRORS).increment();
                 }
             }
             perTargetPool.shutdown();
@@ -145,7 +159,7 @@ public class IngestOrchestrator {
 
             if (jobDao.isStopped(jobId)) {
                 log.warn("Job {} ended via STOP signal", jobId);
-                return true; // run "completed" (was stopped); JobWorker won't override STOPPED.
+                return false; // return false so JobWorker doesn't flip STOPPED to COMPLETED
             }
             if (anyTargetError) {
                 throw new RuntimeException("One or more target pipelines failed");
@@ -153,13 +167,23 @@ public class IngestOrchestrator {
             return true;
         } catch (Exception e) {
             log.error("CRITICAL: Orchestrator encountered a fatal error", e);
-            registry.counter("ingest.orchestrator.errors").increment();
+            registry.counter(METRIC_ORCHESTRATOR_ERRORS).increment();
             throw e;
         } finally {
             if (heartbeat != null) heartbeat.shutdownNow();
-            overallSample.stop(registry.timer("ingest.overall.duration"));
+            overallSample.stop(registry.timer(METRIC_OVERALL_DURATION));
             log.info("Ingestion session finished for job {}.", jobId);
-            MDC.remove("jobId");
+            MDC.remove(MDC_JOB_ID);
+        }
+    }
+
+    private void waitWithHeartbeat(Future<?> f, long jobId, String description) throws Exception {
+        while (!f.isDone()) {
+            try {
+                f.get(1, TimeUnit.MINUTES);
+            } catch (TimeoutException e) {
+                log.info("Job {} is still running {}...", jobId, description);
+            }
         }
     }
 
@@ -172,13 +196,13 @@ public class IngestOrchestrator {
         return ex;
     }
 
-    private void runTarget(Target t, IngestPlan plan, long jobId) {
+    private void runTarget(Target t, IngestPlan plan, long jobId, String businessDate) {
         log.info("Starting target pipeline for {}", t);
         try {
             checkStop(jobId);
-            runIntPhase(t, plan.intFor(t), jobId);
+            runIntPhase(t, plan.intFor(t), jobId, businessDate);
             checkStop(jobId);
-            runDeltaPhase(t, plan.deltaFor(t), jobId);
+            runDeltaPhase(t, plan.deltaFor(t), jobId, businessDate);
         } catch (Exception e) {
             log.error("Pipeline for {} aborted with error", t, e);
             throw new RuntimeException(e);
@@ -187,7 +211,7 @@ public class IngestOrchestrator {
         }
     }
 
-    private void runIntPhase(Target t, List<IngestFile> files, long jobId) throws InterruptedException {
+    private void runIntPhase(Target t, List<IngestFile> files, long jobId, String businessDate) throws InterruptedException {
         if (files.isEmpty()) {
             log.info("No INT files to process for {}", t);
             return;
@@ -203,14 +227,28 @@ public class IngestOrchestrator {
             for (IngestFile f : files) {
                 if (stopped.get() || jobDao.isStopped(jobId)) break;
                 futures.add(pool.submit(() -> {
-                    if (jobDao.isStopped(jobId)) return;
-                    safeIngest(f, jobId);
+                    try {
+                        if (jobDao.isStopped(jobId)) return;
+                        safeIngest(f, jobId, businessDate);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
                 }));
             }
+            boolean anyIntError = false;
             for (Future<?> f : futures) {
-                try { f.get(); } catch (ExecutionException e) {
+                try {
+                    waitWithHeartbeat(f, jobId, "INT task for " + t);
+                } catch (ExecutionException e) {
+                    anyIntError = true;
                     log.error("Internal INT task failed", e.getCause());
+                } catch (Exception e) {
+                    anyIntError = true;
+                    log.error("Error waiting for INT task", e);
                 }
+            }
+            if (anyIntError) {
+                throw new RuntimeException("One or more INT tasks failed for " + t);
             }
         } finally {
             log.info("Target={} INT phase complete. Pool status: completed={}", t, pool.getCompletedTaskCount());
@@ -218,7 +256,7 @@ public class IngestOrchestrator {
         }
     }
 
-    private void runDeltaPhase(Target t, List<IngestFile> files, long jobId) {
+    private void runDeltaPhase(Target t, List<IngestFile> files, long jobId, String businessDate) throws Exception {
         if (files.isEmpty()) {
             log.info("No DELTA files to process for {}", t);
             return;
@@ -229,24 +267,25 @@ public class IngestOrchestrator {
                 log.warn("Stop signaled; aborting DELTA phase for {} at file {}", t, f.fileName());
                 break;
             }
-            safeIngest(f, jobId);
+            safeIngest(f, jobId, businessDate);
         }
         log.info("Target={} DELTA phase complete", t);
     }
 
-    private void safeIngest(IngestFile f, long jobId) {
+    private void safeIngest(IngestFile f, long jobId, String businessDate) {
         Timer.Sample sample = Timer.start(registry);
-        String status = "SUCCESS";
+        String status = AUDIT_SUCCESS;
         try {
-            ingestor.ingest(f, jobId);
-            registry.counter("ingest.files.total", "target", f.target().name(), "kind", f.kind().name(), "status", "success").increment();
+            ingestor.ingest(f, jobId, businessDate);
+            registry.counter(METRIC_FILES_TOTAL, TAG_TARGET, f.target().name(), TAG_KIND, f.kind().name(), TAG_STATUS, "success").increment();
             archive(f);
         } catch (Exception e) {
-            status = "FAILED";
+            status = AUDIT_FAILED;
             log.error("Ingestion failed for " + f.fileName(), e);
-            registry.counter("ingest.files.total", "target", f.target().name(), "kind", f.kind().name(), "status", "failed").increment();
+            registry.counter(METRIC_FILES_TOTAL, TAG_TARGET, f.target().name(), TAG_KIND, f.kind().name(), TAG_STATUS, "failed").increment();
+            throw new RuntimeException(e);
         } finally {
-            sample.stop(registry.timer("ingest.file.duration", "target", f.target().name(), "kind", f.kind().name(), "status", status));
+            sample.stop(registry.timer("ingest.file.duration", TAG_TARGET, f.target().name(), TAG_KIND, f.kind().name(), TAG_STATUS, status.toLowerCase()));
         }
     }
 
@@ -261,7 +300,7 @@ public class IngestOrchestrator {
             log.info("Archived file: {}", f.fileName());
         } catch (Exception e) {
             log.error("Failed to archive file: " + f.fileName(), e);
-            registry.counter("ingest.archive.errors").increment();
+            registry.counter(METRIC_ARCHIVE_ERRORS).increment();
         }
     }
 

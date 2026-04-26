@@ -16,7 +16,6 @@ spring:
 ingest:
   inputDir: ${INGEST_DIR:/data}
   archiveDir: ${ARCHIVE_DIR:/archive}
-  businessDate: ${INGEST_DATE:20260425}
   charset: ${INGEST_CHARSET:UTF-8}
   skipPatterns:
     - "*.note.txt.zip"

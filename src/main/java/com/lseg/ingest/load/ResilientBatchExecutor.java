@@ -59,12 +59,16 @@ public class ResilientBatchExecutor implements AutoCloseable {
     public void flush() throws SQLException {
         if (buffered.isEmpty()) return;
         try {
+            // 1. MASSIVE SPEED: Attempt to send the entire batch (e.g., 5000 rows) to the DB at once.
+            // We use SqlRetry to handle transient errors like deadlocks automatically.
             SqlRetry.withRetry(retryCfg, "batch:" + fileName, () -> {
                 ps.executeBatch();
                 return null;
             });
             succeeded += buffered.size();
         } catch (Exception batchEx) {
+            // 2. THE FALLBACK: If the batch failed (e.g., one row had bad data or a permanent constraint violation),
+            // we catch the exception, clear the batch, and switch to "Safe Mode" (Row-by-Row).
             if (!SqlRetry.isTransient(batchEx)) {
                 log.warn("PERMANENT BATCH FAILURE in {} after {} rows. Falling back to row-by-row. Error: {}", 
                         fileName, buffered.size(), batchEx.getMessage());
@@ -76,6 +80,8 @@ public class ResilientBatchExecutor implements AutoCloseable {
             ps.clearBatch();
             for (PendingRow row : buffered) {
                 try {
+                    // 3. ISOLATION: Attempt to insert/update/delete just this one specific row.
+                    // We also apply retries here in case of individual row deadlocks.
                     SqlRetry.withRetry(retryCfg, "row:" + fileName + ":" + row.lineNumber(), () -> {
                         binder.bind(ps, row);
                         ps.executeUpdate();
@@ -83,12 +89,16 @@ public class ResilientBatchExecutor implements AutoCloseable {
                     });
                     succeeded++;
                 } catch (Exception rowEx) {
+                    // 4. POISON ROW IMMUNITY: This specific row is completely broken (e.g., data too large).
+                    // We log the exact line number, key, and data so it can be fixed manually, 
+                    // but we DO NOT stop the entire file.
                     skipped++;
                     log.error("ROW FAILURE in {} line={} key={}. REASON: {}. DATA: {}", 
                             fileName, row.lineNumber(), row.keyValue(), rowEx.getMessage(), Arrays.toString(row.values()));
                 }
             }
         } finally {
+            // 5. Cleanup: Always clear the buffer so the next batch can start fresh.
             buffered.clear();
         }
     }
