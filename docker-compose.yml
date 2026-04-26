@@ -45,4 +45,5 @@ services:
       - "8080:8080"
     volumes:
       - /Users/sa/Downloads/LSEG/20260425:/data:ro
+      - /Users/sa/Downloads/LSEG/dss-bonds:/bonds:ro
       - /Users/sa/Downloads/LSEG/lseg-ingest/test-input:/test-data

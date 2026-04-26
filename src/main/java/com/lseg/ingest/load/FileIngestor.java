@@ -4,6 +4,8 @@ import com.lseg.ingest.audit.FileAuditDao;
 import com.lseg.ingest.audit.JobDao;
 import com.lseg.ingest.config.IngestProperties;
 import com.lseg.ingest.filter.RicCaretFilter;
+import com.lseg.ingest.io.CsvFileParser;
+import com.lseg.ingest.io.FileParser;
 import com.lseg.ingest.io.PipeFileParser;
 import com.lseg.ingest.io.ZipLineReader;
 import com.lseg.ingest.plan.IngestFile;
@@ -16,7 +18,11 @@ import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.util.HashSet;
@@ -76,25 +82,38 @@ public class FileIngestor {
         log.info("Ingestion started: file={} target={} kind={}", file.fileName(), file.target(), file.kind());
 
         Charset charset = Charset.forName(props.getCharset());
-        try (ZipLineReader z = new ZipLineReader(file.path(), charset)) {
-            PipeFileParser parser = new PipeFileParser(z.reader());
-            parser.initialize(50);
-            PipeFileParser.Metadata md = parser.metadata();
-            int declared = md != null ? md.declaredRows() : -1;
-            audit.markStarted(file, businessDate, declared);
-
-            Set<String> headerSet = new HashSet<>(parser.headerColumns());
-            List<TargetSchema.Column> cols = TargetSchema.intersect(file.target(), headerSet);
-            if (cols.isEmpty()) {
-                String msg = "No overlapping columns found. File headers: " + parser.headerColumns()
-                        + ". Expected for " + file.target() + ": " + TargetSchema.schemaSummary(file.target());
-                log.error("ABORT {}: {}", file.fileName(), msg);
-                audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, truncate(msg));
-                return;
+        if (file.fileName().endsWith(".zip")) {
+            try (ZipLineReader z = new ZipLineReader(file.path(), charset)) {
+                ingestWithParser(new PipeFileParser(z.reader()), file, jobId, businessDate);
             }
-            log.info("Mapped {}/{} columns for {}", cols.size(), TargetSchema.columnsFor(file.target()).size(), file.fileName());
+        } else if (file.fileName().endsWith(".csv")) {
+            try (InputStream is = Files.newInputStream(file.path());
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(is, charset))) {
+                ingestWithParser(new CsvFileParser(reader, file.fileName()), file, jobId, businessDate);
+            }
+        } else {
+            throw new IllegalArgumentException("Unsupported file format: " + file.fileName());
+        }
+    }
 
-            Map<String, Integer> headerIdx = parser.headerIndex();
+    private void ingestWithParser(FileParser parser, IngestFile file, long jobId, String businessDate) throws Exception {
+        parser.initialize(50);
+        FileParser.Metadata md = parser.metadata();
+        int declared = md != null ? md.declaredRows() : -1;
+        audit.markStarted(file, businessDate, declared);
+
+        Set<String> headerSet = new HashSet<>(parser.headerColumns());
+        List<TargetSchema.Column> cols = TargetSchema.intersect(file.target(), headerSet);
+        if (cols.isEmpty()) {
+            String msg = "No overlapping columns found. File headers: " + parser.headerColumns()
+                    + ". Expected for " + file.target() + ": " + TargetSchema.schemaSummary(file.target());
+            log.error("ABORT {}: {}", file.fileName(), msg);
+            audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, truncate(msg));
+            return;
+        }
+        log.info("Mapped {}/{} columns for {}", cols.size(), TargetSchema.columnsFor(file.target()).size(), file.fileName());
+
+        Map<String, Integer> headerIdx = parser.headerIndex();
             int[] srcIndex = new int[cols.size()];
             for (int i = 0; i < cols.size(); i++) {
                 srcIndex[i] = headerIdx.get(cols.get(i).sourceHeader());
@@ -257,7 +276,6 @@ public class FileIngestor {
                 }
             }
         }
-    }
 
     private static String truncate(String s) {
         if (s == null) return null;

@@ -24,7 +24,10 @@ public enum Target {
             List.of("Asset_ID")),
     QUOTES("lseg_quotes",
             List.of("asset_id", "quote_id"),
-            List.of("Asset_ID", "Quote_ID"));
+            List.of("Asset_ID", "Quote_ID")),
+    DSS_BONDS("lseg_dss_bonds",
+            List.of("isin", "instrument_id", "instrument_id_type", "ric"),
+            List.of("ISIN", "Instrument ID", "Instrument ID Type", "RIC"));
 
     public final String table;
     public final List<String> uniqueKeyColumns;        // db column names

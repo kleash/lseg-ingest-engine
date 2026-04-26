@@ -63,7 +63,7 @@ def clean_db(db):
     """Clean all data tables and audit/jobs before each test."""
     with db.cursor() as cur:
         cur.execute("SET FOREIGN_KEY_CHECKS=0")
-        for t in ("lseg_orgs", "lseg_assets", "lseg_quotes"):
+        for t in ("lseg_orgs", "lseg_assets", "lseg_quotes", "lseg_dss_bonds"):
             cur.execute(f"TRUNCATE TABLE {t}")
         # Use DELETE for audit and jobs to preserve auto-increment across tests
         for t in ("lseg_file_audit", "lseg_jobs"):

@@ -27,6 +27,9 @@ public class FileScanner {
     private static final Pattern FILE_PATTERN = Pattern.compile(
             "^(?<dataset>[A-Za-z0-9_\\-]+)\\.(?<kind>INT|REF)\\.(?<feed>[A-Za-z0-9]+)\\.(?<date>\\d{8})\\.(?<seq>\\d+)\\.\\d+\\.\\d+\\.txt\\.zip$");
 
+    private static final Pattern BONDS_CSV_PATTERN = Pattern.compile(
+            "^SG_HK_Bonds_(?<date>\\d{8}).*\\.csv$");
+
     private final IngestProperties props;
 
     public FileScanner(IngestProperties props) {
@@ -47,6 +50,7 @@ public class FileScanner {
         try (Stream<Path> stream = Files.list(dir)) {
             stream.filter(Files::isRegularFile).forEach(p -> {
                 String name = p.getFileName().toString();
+                if (name.endsWith(".ric.csv") || name.endsWith("notes.txt")) return;
                 if (matchesAny(name, skipMatchers)) return;
                 IngestFile f = classify(p, name);
                 if (f != null) out.add(f);
@@ -76,17 +80,28 @@ public class FileScanner {
 
     IngestFile classify(Path path, String name) {
         Matcher m = FILE_PATTERN.matcher(name);
-        if (!m.matches()) return null;
-        String dataset = m.group("dataset");
-        String kindToken = m.group("kind");
-        int seq = Integer.parseInt(m.group("seq"));
-        Target target = mapTarget(dataset);
-        if (target == null) return null;
-        Kind kind = KIND_INT.equals(kindToken) ? Kind.INT : Kind.DELTA;
-        return new IngestFile(path, name, dataset, target, kind, seq);
+        if (m.matches()) {
+            String dataset = m.group("dataset");
+            String kindToken = m.group("kind");
+            int seq = Integer.parseInt(m.group("seq"));
+            Target target = mapTarget(dataset);
+            if (target == null) return null;
+            Kind kind = KIND_INT.equals(kindToken) ? Kind.INT : Kind.DELTA;
+            return new IngestFile(path, name, dataset, target, kind, seq);
+        }
+
+        Matcher mb = BONDS_CSV_PATTERN.matcher(name);
+        if (mb.matches()) {
+            String date = mb.group("date");
+            // For CSV bonds, we synthesize a constant dataset and seq=0
+            return new IngestFile(path, name, "SG_HK_Bonds", Target.DSS_BONDS, Kind.INT, 0);
+        }
+
+        return null;
     }
 
     static Target mapTarget(String dataset) {
+        if (dataset.equals("SG_HK_Bonds")) return Target.DSS_BONDS;
         // ORGS
         if (dataset.equals("Organization")) return Target.ORGS;
         if (dataset.contains("GLOBAL_ORGN") || dataset.contains("GLOABL_ORGN")) return Target.ORGS;

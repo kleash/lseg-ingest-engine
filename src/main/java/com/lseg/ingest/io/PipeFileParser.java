@@ -15,11 +15,9 @@ import static com.lseg.ingest.Constants.*;
  * Header parsing is name-driven: data rows are returned as a String[] where index i corresponds to
  * the column name at headerColumns[i]. Trailing empty token from the trailing '|' is dropped.
  */
-public class PipeFileParser {
+public class PipeFileParser implements FileParser {
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PipeFileParser.class);
-
-    public record Metadata(String dataset, String kind, String feed, String businessDate, int seq, int declaredRows) {}
 
     private final BufferedReader reader;
     private Metadata metadata;
@@ -33,6 +31,7 @@ public class PipeFileParser {
     }
 
     /** Reads up to maxLookahead lines, locates metadata + header rows. */
+    @Override
     public void initialize(int maxLookahead) throws IOException {
         for (int i = 0; i < maxLookahead; i++) {
             String line = reader.readLine();
@@ -64,12 +63,17 @@ public class PipeFileParser {
         throw new IOException("Header row not found within first " + maxLookahead + " lines");
     }
 
+    @Override
     public Metadata metadata() { return metadata; }
+    @Override
     public List<String> headerColumns() { return headerColumns; }
+    @Override
     public Map<String, Integer> headerIndex() { return headerIndex; }
+    @Override
     public long currentLine() { return lineNumber; }
 
     /** Reads the next data row, returns null at EOF. The Action column is included as headerIndex.get("Action"). */
+    @Override
     public String[] nextRow() throws IOException {
         if (!ready) throw new IllegalStateException("initialize() not called");
         String line;

@@ -95,7 +95,26 @@ public class TargetSchema {
                 col("Exercise_Begin_Date", "exercise_begin_date", Types.VARCHAR, STRING),
                 col("Expiration_Date", "expiration_date", Types.VARCHAR, STRING),
                 col("Security_Description", "security_description", Types.VARCHAR, STRING),
+                col("Warrant_Issue_Date", "warrant_issue_date", Types.VARCHAR, STRING),
+                col("Security_Description", "security_description", Types.VARCHAR, STRING),
                 col("Warrant_Issue_Date", "warrant_issue_date", Types.VARCHAR, STRING)));
+
+        SCHEMAS.put(Target.DSS_BONDS, List.of(
+                col("ISIN", "isin", Types.VARCHAR, STRING),
+                col("Instrument ID", "instrument_id", Types.VARCHAR, STRING),
+                col("Instrument ID Type", "instrument_id_type", Types.VARCHAR, STRING),
+                col("RIC", "ric", Types.VARCHAR, STRING),
+                col("Ticker", "ticker", Types.VARCHAR, STRING),
+                col("Security Description", "security_description", Types.VARCHAR, STRING),
+                col("Instrument Full Name - ESMA", "instrument_full_name_esma", Types.VARCHAR, STRING),
+                col("Security Source", "security_source", Types.VARCHAR, STRING),
+                col("Asset ID", "asset_id", Types.VARCHAR, STRING),
+                col("Asset Type", "asset_type", Types.VARCHAR, STRING),
+                col("Asset Type Description", "asset_type_description", Types.VARCHAR, STRING),
+                col("Currency Code", "currency_code", Types.VARCHAR, STRING),
+                col("Issuer Name", "issuer_name", Types.VARCHAR, STRING),
+                col("Issuer LEI", "issuer_lei", Types.VARCHAR, STRING),
+                col("Issuer Short Name", "issuer_short_name", Types.VARCHAR, STRING)));
     }
 
     private static Column col(String src, String db, int type, ValueBinder b) {
