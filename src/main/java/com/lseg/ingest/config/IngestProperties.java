@@ -49,10 +49,13 @@ public class IngestProperties {
     public static class Threads {
         private int intPerTable = 4;
         private int deltaTargetsParallel = 3;
+        private int pricingThreads = 3;
         public int getIntPerTable() { return intPerTable; }
         public void setIntPerTable(int v) { this.intPerTable = v; }
         public int getDeltaTargetsParallel() { return deltaTargetsParallel; }
         public void setDeltaTargetsParallel(int v) { this.deltaTargetsParallel = v; }
+        public int getPricingThreads() { return pricingThreads; }
+        public void setPricingThreads(int v) { this.pricingThreads = v; }
     }
 
     public static class Batch {

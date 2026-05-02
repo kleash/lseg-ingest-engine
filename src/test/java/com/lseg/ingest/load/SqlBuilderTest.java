@@ -20,9 +20,9 @@ class SqlBuilderTest {
         assertTrue(sql.contains("ric"));
         assertTrue(sql.contains("ON DUPLICATE KEY UPDATE"));
         String dupClause = sql.substring(sql.indexOf("ON DUPLICATE"));
-        // Composite key columns must NOT appear in ON DUPLICATE clause.
-        assertFalse(dupClause.contains("asset_id=VALUES(asset_id)"));
+        // Both asset_id and quote_id are key columns — neither should appear in ON DUPLICATE clause.
         assertFalse(dupClause.contains("quote_id=VALUES(quote_id)"));
+        assertFalse(dupClause.contains("asset_id=VALUES(asset_id)"));
         assertTrue(dupClause.contains("ric=VALUES(ric)"));
         assertTrue(dupClause.contains("is_deleted=0"));
     }
@@ -45,5 +45,28 @@ class SqlBuilderTest {
         String dupClause = sql.substring(sql.indexOf("ON DUPLICATE"));
         assertFalse(dupClause.contains("isin=VALUES(isin)"));
         assertTrue(dupClause.contains("ticker=VALUES(ticker)"));
+    }
+
+    @Test
+    void upsertPricingUsesConditionalIfAndTradeDateLast() {
+        var cols = TargetSchema.intersect(Target.PRICING,
+                Set.of("Quote_ID", "Trade_Date", "Close_Price", "Ask_Price"));
+        String sql = SqlBuilder.upsert(Target.PRICING, cols);
+
+        assertTrue(sql.contains("INSERT INTO lseg_pricing"));
+        assertTrue(sql.contains("ON DUPLICATE KEY UPDATE"));
+        String dupClause = sql.substring(sql.indexOf("ON DUPLICATE"));
+
+        // quote_id is a key, shouldn't be in UPDATE clause
+        assertFalse(dupClause.contains("quote_id = IF"));
+        assertFalse(dupClause.contains("quote_id=VALUES(quote_id)"));
+
+        // trade_date must be last and use IF
+        assertTrue(dupClause.endsWith("trade_date = IF(VALUES(trade_date) >= trade_date, VALUES(trade_date), trade_date)"));
+
+        // other columns use IF
+        assertTrue(dupClause.contains("close_price = IF(VALUES(trade_date) >= trade_date, VALUES(close_price), close_price)"));
+        assertTrue(dupClause.contains("ask_price = IF(VALUES(trade_date) >= trade_date, VALUES(ask_price), ask_price)"));
+        assertTrue(dupClause.contains("is_deleted = IF(VALUES(trade_date) >= trade_date, 0, is_deleted)"));
     }
 }

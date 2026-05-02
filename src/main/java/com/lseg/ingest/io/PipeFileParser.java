@@ -44,7 +44,11 @@ public class PipeFileParser implements FileParser {
                 metadata = parseMetadata(trimmed);
                 continue;
             }
-            if (looksLikeHeader(trimmed)) {
+            // Standard files: header starts with "Action|".
+            // Pricing files (PRC kind): no Action column — accept any pipe-containing line once
+            // metadata is known. Junk lines between metadata and header have no pipes, so they
+            // are naturally skipped without the old Action-prefix guard.
+            if (looksLikeHeader(trimmed) || (metadata != null && trimmed.contains("|"))) {
                 headerColumns = splitTokens(trimmed);
                 headerIndex = new HashMap<>(headerColumns.size() * 2);
                 java.util.List<String> dups = new java.util.ArrayList<>();
@@ -98,17 +102,21 @@ public class PipeFileParser implements FileParser {
     }
 
     private static boolean looksLikeMetadata(String line) {
-        // Rough check: 6 pipe-separated fields, second is INT or REF, fourth looks like date.
+        // Rough check: second field is INT/REF/PRC, fourth looks like a date.
         String[] toks = line.split("\\|", -1);
         if (toks.length < 6) return false;
-        if (!toks[1].equals(KIND_INT) && !toks[1].equals(KIND_REF)) return false;
+        if (!toks[1].equals(KIND_INT) && !toks[1].equals(KIND_REF) && !toks[1].equals(KIND_PRC)) return false;
+        // PRC format has an extra chunk field: needs at least 7 fields to hold row count at index 6
+        if (KIND_PRC.equals(toks[1]) && toks.length < 7) return false;
         return toks[3].matches("\\d{8}");
     }
 
     private static Metadata parseMetadata(String line) {
         String[] t = line.split("\\|", -1);
         int seq = safeInt(t[4]);
-        int rows = safeInt(t[5]);
+        // PRC format: dataset|PRC|feed|date|batch|chunk|rows| — rows at index 6
+        // INT/REF format: dataset|INT|feed|date|seq|rows|    — rows at index 5
+        int rows = KIND_PRC.equals(t[1]) ? (t.length > 6 ? safeInt(t[6]) : -1) : safeInt(t[5]);
         return new Metadata(t[0], t[1], t[2], t[3], seq, rows);
     }
 

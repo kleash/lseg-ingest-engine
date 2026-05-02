@@ -25,6 +25,7 @@ public final class Constants {
     public static final String KIND_INT = "INT";
     public static final String KIND_DELTA = "DELTA";
     public static final String KIND_REF = "REF";
+    public static final String KIND_PRC = "PRC";
 
     // Action Types
     public static final String ACTION_INSERT = "I";

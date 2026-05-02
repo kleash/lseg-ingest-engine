@@ -244,6 +244,22 @@ public class FileIngestor {
                         upserter.flush();
                     }
 
+                    // 11b. Reconciliation: NULL yields to Asset.
+                    // If a quote was previously (or just now) linked to NULL, but an anchored
+                    // (non-NULL asset_id) record exists for the same quote_id, remove the NULL record.
+                    if (target == Target.QUOTES) {
+                        try (java.sql.Statement stmt = conn.createStatement()) {
+                            int reconciled = stmt.executeUpdate(
+                                    "DELETE q1 FROM lseg_quotes q1 " +
+                                            "JOIN lseg_quotes q2 ON q1.quote_id = q2.quote_id " +
+                                            "WHERE q1.asset_id IS NULL AND q2.asset_id IS NOT NULL"
+                            );
+                            if (reconciled > 0) {
+                                log.info("Reconciled {} NULL-asset duplicates for {}", reconciled, file.fileName());
+                            }
+                        }
+                    }
+
                     // 12. Commit.
                     // Actually finalize the transaction in MariaDB.
                     conn.commit();

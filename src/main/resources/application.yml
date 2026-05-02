@@ -24,6 +24,7 @@ ingest:
   threads:
     intPerTable: 10
     deltaTargetsParallel: 3
+    pricing-threads: 3
   batch:
     upsertSize: 5000
     deleteSize: 5000

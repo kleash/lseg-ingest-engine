@@ -97,6 +97,25 @@ public class TargetSchema {
                 col("Security_Description", "security_description", Types.VARCHAR, STRING),
                 col("Warrant_Issue_Date", "warrant_issue_date", Types.VARCHAR, STRING)));
 
+        SCHEMAS.put(Target.PRICING, List.of(
+                col("Quote_ID",                    "quote_id",                    Types.VARCHAR, STRING),
+                col("Quote_Perm_ID",               "quote_perm_id",               Types.VARCHAR, STRING),
+                col("Trade_Date",                  "trade_date",                  Types.VARCHAR, STRING),
+                col("Alternate_Close_Price",       "alternate_close_price",       Types.VARCHAR, STRING),
+                col("Ask_Price",                   "ask_price",                   Types.VARCHAR, STRING),
+                col("Bid_Price",                   "bid_price",                   Types.VARCHAR, STRING),
+                col("Close_Auction_Price",         "close_auction_price",         Types.VARCHAR, STRING),
+                col("Close_Auction_Price_Grade",   "close_auction_price_grade",   Types.VARCHAR, STRING),
+                col("Close_Price",                 "close_price",                 Types.VARCHAR, STRING),
+                col("Close_Price_Timestamp",       "close_price_timestamp",       Types.VARCHAR, STRING),
+                col("Close_Price_Timestamp_Grade", "close_price_timestamp_grade", Types.VARCHAR, STRING),
+                col("High_Price",                  "high_price",                  Types.VARCHAR, STRING),
+                col("Low_Price",                   "low_price",                   Types.VARCHAR, STRING),
+                col("Mid_Price",                   "mid_price",                   Types.VARCHAR, STRING),
+                col("Offer_Price",                 "offer_price",                 Types.VARCHAR, STRING),
+                col("Open_Price",                  "open_price",                  Types.VARCHAR, STRING),
+                col("Settlement_Price",            "settlement_price",            Types.VARCHAR, STRING)));
+
         SCHEMAS.put(Target.DSS_BONDS, List.of(
                 col("ISIN", "isin", Types.VARCHAR, STRING),
                 col("Instrument ID", "instrument_id", Types.VARCHAR, STRING),

@@ -69,4 +69,45 @@ class FileScannerTest {
         // Reference-INT-EQUI-* dataset name doesn't match any target rule even if classify is called directly.
         assertNull(scanner.classify(Path.of("/x"), "Some_Random_File.INT.1.20260425.1.1.1.txt.zip"));
     }
+
+    // --- PRICING ---
+
+    @Test
+    void classifiesUsPricingFile() {
+        IngestFile f = scanner.classify(Path.of("/x"),
+                "EIS_INT_US_PRICING.PRC.25DA1.20260430.1.1.1.1.txt.zip");
+        assertNotNull(f);
+        assertEquals(Target.PRICING, f.target());
+        assertEquals(Kind.INT, f.kind());
+        assertEquals(1, f.seq());
+        assertEquals("EIS_INT_US_PRICING", f.dataset());
+    }
+
+    @Test
+    void classifiesEuPricingFile() {
+        IngestFile f = scanner.classify(Path.of("/x"),
+                "EIS_INT_EU_PRICING.PRC.25DA0.20260430.10.16.1.1.txt.zip");
+        assertNotNull(f);
+        assertEquals(Target.PRICING, f.target());
+        assertEquals(Kind.INT, f.kind());
+        assertEquals(10, f.seq());
+        assertEquals("EIS_INT_EU_PRICING", f.dataset());
+    }
+
+    @Test
+    void classifiesAsiaPricingFile() {
+        IngestFile f = scanner.classify(Path.of("/x"),
+                "EIS_INT_ASIA_PRICING.PRC.25D9F.20260430.96.120.1.1.txt.zip");
+        assertNotNull(f);
+        assertEquals(Target.PRICING, f.target());
+        assertEquals(96, f.seq());
+    }
+
+    @Test
+    void rejectsPricingNoteFile() {
+        // Note files have "note" in place of the two numeric suffix segments — must not classify
+        assertNull(scanner.classify(Path.of("/x"),
+                "EIS_INT_US_PRICING.PRC.25DA1.20260430.1.1.note.txt.zip"));
+    }
+
 }

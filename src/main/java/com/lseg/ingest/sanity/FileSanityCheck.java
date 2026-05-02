@@ -6,6 +6,7 @@ import com.lseg.ingest.io.PipeFileParser;
 import com.lseg.ingest.io.ZipLineReader;
 import com.lseg.ingest.plan.IngestFile;
 import com.lseg.ingest.plan.Kind;
+import com.lseg.ingest.plan.Target;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -54,9 +55,12 @@ public class FileSanityCheck {
             FileParser.Metadata md = p.metadata();
             if (md == null) return new Result(false, "metadata row missing", null, p.headerColumns());
 
-            String expectedKind = (file.kind() == Kind.INT) ? KIND_INT : KIND_REF;
-            if (!expectedKind.equals(md.kind()))
-                return new Result(false, "metadata kind=" + md.kind() + " expected=" + expectedKind, md, p.headerColumns());
+            // PRICING files carry "PRC" in their metadata but are treated as Kind.INT in the pipeline
+            if (file.target() != Target.PRICING) {
+                String expectedKind = (file.kind() == Kind.INT) ? KIND_INT : KIND_REF;
+                if (!expectedKind.equals(md.kind()))
+                    return new Result(false, "metadata kind=" + md.kind() + " expected=" + expectedKind, md, p.headerColumns());
+            }
 
             if (expectedBusinessDate != null && !expectedBusinessDate.equals(md.businessDate()))
                 return new Result(false, "business date=" + md.businessDate() + " expected=" + expectedBusinessDate, md, p.headerColumns());

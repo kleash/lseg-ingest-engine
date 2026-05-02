@@ -27,9 +27,18 @@ public class FileAuditDao {
 
     public Set<String> loadSuccessFileNames() {
         List<String> names = jdbc.queryForList(
-                "SELECT file_name FROM lseg_file_audit WHERE status = ? " +
-                        "AND finished_at >= (CURRENT_DATE - INTERVAL 1 MONTH)",
+                "SELECT file_name FROM lseg_file_audit WHERE status = ?",
                 String.class, AUDIT_SUCCESS);
+        return new HashSet<>(names);
+    }
+
+    /** File names that were SUCCESS but their finished_at is older than the given days threshold.
+     *  Used to warn when a stale-but-successful file is about to be re-ingested. */
+    public Set<String> loadStaleSuccessFileNames(int olderThanDays) {
+        List<String> names = jdbc.queryForList(
+                "SELECT file_name FROM lseg_file_audit WHERE status = ? " +
+                        "AND finished_at < (CURRENT_DATE - INTERVAL ? DAY)",
+                String.class, AUDIT_SUCCESS, olderThanDays);
         return new HashSet<>(names);
     }
 

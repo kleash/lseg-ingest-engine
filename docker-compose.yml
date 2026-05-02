@@ -11,6 +11,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+    volumes:
+      - mariadb_data:/var/lib/mysql
 
   init-accounts:
     image: mariadb:11
@@ -47,3 +49,6 @@ services:
       - /Users/sa/Downloads/LSEG/20260425:/data:ro
       - /Users/sa/Downloads/LSEG/dss-bonds:/bonds:ro
       - /Users/sa/Downloads/LSEG/lseg-ingest/test-input:/test-data
+
+volumes:
+  mariadb_data:

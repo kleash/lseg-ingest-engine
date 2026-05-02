@@ -3,14 +3,17 @@ package com.lseg.ingest.orchestrator;
 import com.lseg.ingest.audit.FileAuditDao;
 import com.lseg.ingest.audit.JobDao;
 import com.lseg.ingest.config.IngestProperties;
+import com.lseg.ingest.event.TargetIngestCompletedEvent;
 import com.lseg.ingest.load.FileIngestor;
 import com.lseg.ingest.plan.*;
 import com.lseg.ingest.sanity.FileSanityCheck;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Files;
@@ -33,10 +36,16 @@ import static com.lseg.ingest.Constants.*;
  *   2. Start a heartbeat task that updates lseg_jobs.last_heartbeat_at.
  *   3. Scan + classify files; drop already-SUCCESSful files (audit table).
  *   4. Pre-ingest sanity check; failures get SKIPPED_SANITY.
- *   5. For each Target in parallel: run all INT files (parallel within target),
- *      then all DELTA files (sequential by seq). DELTA never runs while INT is in flight
- *      for the same target.
- *   6. Cooperative stop: jobDao.isStopped(jobId) is polled at submit boundaries AND inside
+ *   5. Phase 1 [parallel]: ORGS, ASSETS, QUOTES, DSS_BONDS — each runs INT files in
+ *      parallel then DELTA files sequentially. DELTA never runs while INT is in flight.
+ *   6. Phase 2 [async]: PRICING files are submitted to a dedicated 3-thread background
+ *      executor ({@code pricingExecutor}) and run() returns immediately. The cluster lock
+ *      is released before PRICING starts, so new Phase 1 jobs can begin within seconds.
+ *      {@code TargetIngestCompletedEvent(PRICING)} fires from the background thread when
+ *      all pricing files finish — after the job row shows COMPLETED in lseg_jobs.
+ *      Note: synchronous {@code @EventListener} handlers for PRICING events execute on a
+ *      pricingExecutor thread; keep them fast or annotate with {@code @Async}.
+ *   7. Cooperative stop: jobDao.isStopped(jobId) is polled at submit boundaries AND inside
  *      the row loop, so a stop signal aborts within seconds, not minutes.
  */
 @Component
@@ -52,10 +61,12 @@ public class IngestOrchestrator {
     private final IngestProperties props;
     private final MeterRegistry registry;
     private final ClusterLock clusterLock;
+    private final ApplicationEventPublisher eventPublisher;
+    private final ExecutorService pricingExecutor;
 
     public IngestOrchestrator(FileScanner scanner, FileSanityCheck sanity, FileAuditDao audit, JobDao jobDao,
                               FileIngestor ingestor, IngestProperties props, MeterRegistry registry,
-                              ClusterLock clusterLock) {
+                              ClusterLock clusterLock, ApplicationEventPublisher eventPublisher) {
         this.scanner = scanner;
         this.sanity = sanity;
         this.audit = audit;
@@ -64,6 +75,23 @@ public class IngestOrchestrator {
         this.props = props;
         this.registry = registry;
         this.clusterLock = clusterLock;
+        this.eventPublisher = eventPublisher;
+        this.pricingExecutor = Executors.newFixedThreadPool(
+                Math.max(1, props.getThreads().getPricingThreads()),
+                daemonThreads("pricing"));
+    }
+
+    @PreDestroy
+    public void shutdownPricingExecutor() {
+        pricingExecutor.shutdown();
+        try {
+            if (!pricingExecutor.awaitTermination(5, TimeUnit.MINUTES)) {
+                pricingExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            pricingExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     /** @return true if the run completed (success or failed); false if the cluster lock was unavailable. */
@@ -102,16 +130,22 @@ public class IngestOrchestrator {
             
             // 6. VALIDATION/IDEMPOTENCY: Query the database to find files we've already successfully finished.
             Set<String> alreadyDone = audit.loadSuccessFileNames();
+            Set<String> staleSuccess = audit.loadStaleSuccessFileNames(30);
             List<IngestFile> remaining = new ArrayList<>(all.size());
+            int staleReIngestCount = 0;
             for (IngestFile f : all) {
                 if (alreadyDone.contains(f.fileName())) {
                     log.debug("Skipping already-ingested file {}", f.fileName());
                 } else {
+                    if (staleSuccess.contains(f.fileName())) {
+                        staleReIngestCount++;
+                        log.warn("Re-ingesting stale file (SUCCESS older than 30 days): {}", f.fileName());
+                    }
                     remaining.add(f);
                 }
             }
-            log.info("Production Status - Files: total={} already-ingested={} remaining={}",
-                    all.size(), all.size() - remaining.size(), remaining.size());
+            log.info("Production Status - Files: total={} already-ingested={} remaining={} stale-re-ingest={}",
+                    all.size(), all.size() - remaining.size(), remaining.size(), staleReIngestCount);
 
             // 7. SANITY CHECK: Before doing expensive database work, check the files.
             // This reads the first 50 lines looking for the correct headers.
@@ -132,19 +166,21 @@ public class IngestOrchestrator {
             IngestPlan plan = new IngestPlan(good);
             log.info("Ingestion Plan built: {}", plan.summary());
 
-            // 9. PARALLEL EXECUTION: Fire off a separate thread for each target table.
+            // 9. PARALLEL EXECUTION: Phase 1 — ORGS, ASSETS, QUOTES, DSS_BONDS run in parallel.
+            //    Phase 2 — PRICING runs last (lowest priority) after all Phase 1 targets complete.
             ExecutorService perTargetPool = Executors.newFixedThreadPool(
                     Math.max(1, props.getThreads().getDeltaTargetsParallel()),
                     daemonThreads("target"));
 
-            List<Future<?>> targetFutures = new ArrayList<>();
+            List<Future<?>> phase1Futures = new ArrayList<>();
             for (Target t : Target.values()) {
-                targetFutures.add(perTargetPool.submit(() -> runTarget(t, plan, jobId, businessDate)));
+                if (t == Target.PRICING) continue;
+                phase1Futures.add(perTargetPool.submit(() -> runTarget(t, plan, jobId, businessDate)));
             }
-            
-            // 10. Wait for all target pipelines to finish.
+
+            // 10. Wait for all Phase 1 pipelines to finish.
             boolean anyTargetError = false;
-            for (Future<?> f : targetFutures) {
+            for (Future<?> f : phase1Futures) {
                 try {
                     waitWithHeartbeat(f, jobId, "target pipeline");
                 } catch (ExecutionException e) {
@@ -153,6 +189,17 @@ public class IngestOrchestrator {
                     registry.counter(METRIC_TARGET_ERRORS).increment();
                 }
             }
+
+            // 11. Phase 2 — PRICING submitted to dedicated background executor.
+            // The cluster lock is released after run() returns, allowing the next
+            // ORGS/ASSETS/QUOTES job to start immediately without waiting for pricing to finish.
+            if (!jobDao.isStopped(jobId)) {
+                submitPricingAsync(plan, jobId, businessDate);
+            } else {
+                eventPublisher.publishEvent(
+                        new TargetIngestCompletedEvent(Target.PRICING, businessDate, jobId, false, 0));
+            }
+
             perTargetPool.shutdown();
             if (!perTargetPool.awaitTermination(2, TimeUnit.MINUTES)) {
                 perTargetPool.shutdownNow();
@@ -197,18 +244,65 @@ public class IngestOrchestrator {
         return ex;
     }
 
+    private void submitPricingAsync(IngestPlan plan, long jobId, String businessDate) {
+        List<IngestFile> pricingFiles = plan.intFor(Target.PRICING);
+        int totalFiles = pricingFiles.size();
+
+        if (pricingFiles.isEmpty()) {
+            log.info("No PRICING files to process; firing event immediately");
+            eventPublisher.publishEvent(
+                    new TargetIngestCompletedEvent(Target.PRICING, businessDate, jobId, true, 0));
+            return;
+        }
+
+        log.info("Submitting {} PRICING files to background executor (threads={})",
+                totalFiles, props.getThreads().getPricingThreads());
+
+        AtomicBoolean anyFailed = new AtomicBoolean(false);
+        List<CompletableFuture<Void>> futures = new ArrayList<>(totalFiles);
+        for (IngestFile f : pricingFiles) {
+            futures.add(CompletableFuture.runAsync(() -> {
+                MDC.put(MDC_JOB_ID, String.valueOf(jobId));
+                try {
+                    safeIngest(f, jobId, businessDate);
+                } catch (Exception e) {
+                    anyFailed.set(true);
+                    log.error("Background PRICING ingest failed for {}", f.fileName(), e);
+                } finally {
+                    MDC.remove(MDC_JOB_ID);
+                }
+            }, pricingExecutor));
+        }
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .whenComplete((v, ex) -> {
+                    if (ex != null) {
+                        log.error("Background PRICING executor error", ex);
+                    }
+                    boolean success = !anyFailed.get() && ex == null;
+                    log.info("Background PRICING complete: files={} success={}", totalFiles, success);
+                    eventPublisher.publishEvent(
+                            new TargetIngestCompletedEvent(Target.PRICING, businessDate, jobId, success, totalFiles));
+                });
+    }
+
     private void runTarget(Target t, IngestPlan plan, long jobId, String businessDate) {
         log.info("Starting target pipeline for {}", t);
+        boolean success = false;
+        int fileCount = plan.intFor(t).size() + plan.deltaFor(t).size();
         try {
             checkStop(jobId);
             runIntPhase(t, plan.intFor(t), jobId, businessDate);
             checkStop(jobId);
             runDeltaPhase(t, plan.deltaFor(t), jobId, businessDate);
+            success = true;
         } catch (Exception e) {
             log.error("Pipeline for {} aborted with error", t, e);
             throw new RuntimeException(e);
         } finally {
-            log.info("Target pipeline for {} finished", t);
+            log.info("Target pipeline for {} finished (success={}, files={})", t, success, fileCount);
+            eventPublisher.publishEvent(
+                    new TargetIngestCompletedEvent(t, businessDate, jobId, success, fileCount));
         }
     }
 
@@ -222,11 +316,10 @@ public class IngestOrchestrator {
 
         ThreadPoolExecutor pool = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads,
                 daemonThreads("int-" + t.name().toLowerCase()));
-        AtomicBoolean stopped = new AtomicBoolean(false);
         try {
             List<Future<?>> futures = new ArrayList<>();
             for (IngestFile f : files) {
-                if (stopped.get() || jobDao.isStopped(jobId)) break;
+                if (jobDao.isStopped(jobId)) break;
                 futures.add(pool.submit(() -> {
                     try {
                         if (jobDao.isStopped(jobId)) return;

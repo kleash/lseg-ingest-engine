@@ -30,6 +30,11 @@ public class FileScanner {
     private static final Pattern BONDS_CSV_PATTERN = Pattern.compile(
             "^SG_HK_Bonds_(?<date>\\d{8})[^.]*\\.csv$");
 
+    // Covers EIS_INT_US_PRICING, EIS_INT_EU_PRICING, EIS_INT_ASIA_PRICING (all end with _PRICING)
+    // Note files (*.note.txt.zip) don't match: they have "note" where the 3rd-to-last \d+ is expected
+    private static final Pattern PRICING_PATTERN = Pattern.compile(
+            "^(?<dataset>[A-Za-z0-9_\\-]+_PRICING)\\.PRC\\.(?<feed>[A-Za-z0-9]+)\\.(?<date>\\d{8})\\.(?<seq>\\d+)\\.\\d+\\.\\d+\\.\\d+\\.txt\\.zip$");
+
     private final IngestProperties props;
 
     public FileScanner(IngestProperties props) {
@@ -97,6 +102,13 @@ public class FileScanner {
             return new IngestFile(path, name, "SG_HK_Bonds", Target.DSS_BONDS, Kind.INT, 0);
         }
 
+        Matcher mp = PRICING_PATTERN.matcher(name);
+        if (mp.matches()) {
+            String dataset = mp.group("dataset");
+            int seq = Integer.parseInt(mp.group("seq"));
+            return new IngestFile(path, name, dataset, Target.PRICING, Kind.INT, seq);
+        }
+
         return null;
     }
 
@@ -111,6 +123,10 @@ public class FileScanner {
         // QUOTES
         if (dataset.startsWith("EIS_INT_") && (dataset.endsWith("_QUOTE") || dataset.endsWith("_QUOTES"))) return Target.QUOTES;
         if (dataset.startsWith("EIS_DELTA_") && dataset.endsWith("_QUOTE")) return Target.QUOTES;
+        // PRICING — covers EIS_INT_US_PRICING, EIS_INT_EU_PRICING, EIS_INT_ASIA_PRICING.
+        // NOTE: pricing files are routed via PRICING_PATTERN in classify() before mapTarget() is
+        // called, so this rule acts as a secondary fallback for direct mapTarget() callers only.
+        if (dataset.endsWith("_PRICING")) return Target.PRICING;
         return null;
     }
 }

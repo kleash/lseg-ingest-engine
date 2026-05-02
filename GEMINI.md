@@ -10,6 +10,10 @@ Agent-oriented project map. Use this as the entry point for an LLM coding agent 
 - **Stack:** Java 21, Spring Boot 3.3.5 (web + actuator + scheduling), Plain JDBC (hot path), HikariCP, MariaDB 11, Liquibase (separate `owner` DB account), Micrometer.
 - **Coordination:** `lseg_jobs` queue + `JobWorker` poll + atomic UPDATE claim + MariaDB `GET_LOCK` cluster singleton + heartbeat + `JobReaper` for stuck-RUNNING recovery.
 - **Idempotency:** composite UNIQUE on natural keys + `INSERT … ON DUPLICATE KEY UPDATE` + `lseg_file_audit` (skip on filename SUCCESS).
+- **Priority Deduplication:**
+    - `lseg_pricing`: Enforces "Latest Price Only" via `UNIQUE(quote_id)`.
+    - `lseg_quotes`: Hybrid approach using a virtual column `asset_id_v` to prevent multiple NULL asset records while allowing multi-asset mappings.
+    - **Reconciliation**: `FileIngestor` performs post-ingestion cleanup where NULL asset records are deleted if an anchored (non-NULL asset_id) record exists for the same quote.
 - **Soft delete:** `is_deleted` column reset to 0 on every successful upsert.
 - **Resilience:** `ResilientBatchExecutor` is generic over a `RowBinder` (used for both UPSERT and DELETE batches); `SqlRetry` with exponential backoff at both batch and per-row level on transient errors (deadlock 1213, lock-wait 1205, connection class `08*`, serialization `40001`); permanent-batch failures fall back to row-by-row replay with per-row exception isolation.
 - **In-file ordering:** when the action stream switches between `I/U` and `D`, the active batch flushes before the other side accumulates. Guarantees `D <key>` then `I <key>` leaves row LIVE; `I <key>` then `D <key>` leaves row SOFT-DELETED.
@@ -25,7 +29,9 @@ Agent-oriented project map. Use this as the entry point for an LLM coding agent 
 - Row filter: INT-quote rows with `RIC` containing `^` (DELTA quote rows are kept)
 
 ### Schema
-- Composite UNIQUE keys: `lseg_orgs(entity_id)`, `lseg_assets(asset_id)`, `lseg_quotes(asset_id, quote_id)`. NULL key columns tolerate duplicates per spec.
+- Composite UNIQUE keys: `lseg_orgs(entity_id)`, `lseg_assets(asset_id)`, `lseg_quotes(quote_id, asset_id_v)`. 
+- `lseg_quotes.asset_id_v`: A virtual column `IFNULL(asset_id, '')` used to ensure only one NULL entry per `quote_id` can exist.
+- `lseg_pricing.quote_id`: Single unique key to enforce "Latest Price Only" logic.
 - `lseg_jobs`: `(business_date, input_dir, last_heartbeat_at)` carried per-job; reaper sweeps stale RUNNING after 3 h (configurable).
 - `lseg_file_audit`: UNIQUE on `file_name`; `STARTED → SUCCESS|FAILED|SKIPPED_SANITY|SKIPPED`.
 

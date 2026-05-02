@@ -131,6 +131,49 @@ def make_org_delta_file(seq=1, rows=None, business_date=BUSINESS_DATE):
     return "\n".join(lines) + "\n"
 
 
+def make_quote_file(dataset="EIS_INT_GLOBAL_QUOTES", kind="INT", seq=1, rows=None, business_date=BUSINESS_DATE):
+    rows = rows if rows is not None else []
+    declared = len(rows)
+    header_metadata = f"{dataset}|{kind}|99999|{business_date}|{seq}|{declared}|"
+    header = "Action|Asset_ID|Quote_ID|RIC|Ticker|Currency_Code|Entity_ID|Entity_Perm_ID|Issue_Perm_ID|Level|Quote_Perm_ID|"
+    lines = [header_metadata, header]
+    for r in rows:
+        lines.append("|".join([
+            r.get("Action", "I"),
+            r.get("Asset_ID", ""),
+            r.get("Quote_ID", ""),
+            r.get("RIC", ""),
+            r.get("Ticker", ""),
+            r.get("Currency_Code", ""),
+            r.get("Entity_ID", ""),
+            r.get("Entity_Perm_ID", ""),
+            r.get("Issue_Perm_ID", ""),
+            r.get("Level", ""),
+            r.get("Quote_Perm_ID", ""),
+            ""
+        ]))
+    return "\n".join(lines) + "\n"
+
+
+def make_pricing_file(dataset="EIS_INT_US_PRICING", seq=1, chunk=1, rows=None, business_date=BUSINESS_DATE):
+    rows = rows if rows is not None else []
+    declared = len(rows)
+    # PRC format: dataset|PRC|feed|date|batch|chunk|rows|
+    header_metadata = f"{dataset}|PRC|99999|{business_date}|{seq}|{chunk}|{declared}|"
+    header = "Quote_ID|Trade_Date|Close_Price|Ask_Price|Bid_Price|"
+    lines = [header_metadata, header]
+    for r in rows:
+        lines.append("|".join([
+            r.get("Quote_ID", ""),
+            r.get("Trade_Date", ""),
+            r.get("Close_Price", ""),
+            r.get("Ask_Price", ""),
+            r.get("Bid_Price", ""),
+            ""
+        ]))
+    return "\n".join(lines) + "\n"
+
+
 def trigger_job(business_date=BUSINESS_DATE, input_dir_container=INPUT_DIR_CONTAINER):
     r = requests.post(f"{APP_URL}/api/jobs/trigger",
                       params={"businessDate": business_date, "inputDir": input_dir_container})
