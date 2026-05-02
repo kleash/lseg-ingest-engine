@@ -106,6 +106,8 @@ public class FileScanner {
         if (mp.matches()) {
             String dataset = mp.group("dataset");
             int seq = Integer.parseInt(mp.group("seq"));
+            // PRICING files are always Kind.INT. The LSEG pricing feed has no delta variant,
+            // so plan.deltaFor(Target.PRICING) is always empty in the orchestrator.
             return new IngestFile(path, name, dataset, Target.PRICING, Kind.INT, seq);
         }
 
@@ -122,7 +124,7 @@ public class FileScanner {
         if (dataset.equals("EIS_DELTA_GLOBAL_ASSETS")) return Target.ASSETS;
         // QUOTES
         if (dataset.startsWith("EIS_INT_") && (dataset.endsWith("_QUOTE") || dataset.endsWith("_QUOTES"))) return Target.QUOTES;
-        if (dataset.startsWith("EIS_DELTA_") && dataset.endsWith("_QUOTE")) return Target.QUOTES;
+        if (dataset.startsWith("EIS_DELTA_") && (dataset.endsWith("_QUOTE") || dataset.endsWith("_QUOTES"))) return Target.QUOTES;
         // PRICING — covers EIS_INT_US_PRICING, EIS_INT_EU_PRICING, EIS_INT_ASIA_PRICING.
         // NOTE: pricing files are routed via PRICING_PATTERN in classify() before mapTarget() is
         // called, so this rule acts as a secondary fallback for direct mapTarget() callers only.

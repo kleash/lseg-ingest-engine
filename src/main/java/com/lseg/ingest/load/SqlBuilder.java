@@ -60,7 +60,7 @@ public class SqlBuilder {
      */
     public static String delete(Target target) {
         String where = target.uniqueKeyColumns.stream()
-                .map(c -> c + " = ?")
+                .map(c -> c + " <=> ?")
                 .collect(Collectors.joining(" AND "));
         return "UPDATE " + target.table + " SET is_deleted = 1 WHERE " + where;
     }

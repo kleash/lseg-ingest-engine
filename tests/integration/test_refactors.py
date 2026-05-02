@@ -57,7 +57,7 @@ def test_quotes_deduplication_null_asset(clean_db, input_dir, db):
         assert res[0] == "A1"
         assert res[1] == "RIC1"
 
-    # 2. Ingest record with NULL Asset_ID (should collapse into same row)
+    # 2. Ingest record with NULL Asset_ID (should be deleted by reconciliation as Q1/A1 exists)
     write_zip(input_dir, "EIS_INT_GLOBAL_QUOTES.INT.99999.20260425.2.1.1.txt.zip",
               make_quote_file(rows=[{"Action": "I", "Asset_ID": "", "Quote_ID": "Q1", "RIC": "RIC1_UPDATED"}]))
     
@@ -65,12 +65,16 @@ def test_quotes_deduplication_null_asset(clean_db, input_dir, db):
     assert wait_for_job(job2) == "COMPLETED"
 
     with db.cursor() as cur:
+        # Should still be only 1 row (the anchored one)
         cur.execute("SELECT COUNT(*) FROM lseg_quotes WHERE quote_id='Q1'")
         assert cur.fetchone()[0] == 1
+        
+        # The anchored record (A1) should remain, NOT the NULL one.
+        # Reconciliation deletes the NULL row because a non-NULL asset_id (A1) row exists for Q1.
         cur.execute("SELECT asset_id, ric FROM lseg_quotes WHERE quote_id='Q1'")
         res = cur.fetchone()
-        assert res[0] is None or res[0] == "" # Depending on how binder handles empty
-        assert res[1] == "RIC1_UPDATED"
+        assert res[0] == "A1"
+        assert res[1] == "RIC1"  # RIC from the anchored record is preserved
 
 def test_pricing_async_processing(clean_db, input_dir, db):
     # Need at least one Phase 1 file and one PRICING file

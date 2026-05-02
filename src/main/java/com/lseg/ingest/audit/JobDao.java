@@ -11,18 +11,7 @@ import java.sql.Statement;
 import java.util.List;
 import java.util.Optional;
 
-import static com.lseg.ingest.Constants.*;
-
-/**
- * Job lifecycle in lseg_jobs.
- *
- * Critical guarantees for multi-instance:
- *   - queueJob: returns the just-inserted id via KeyHolder (no LAST_INSERT_ID() round-trip
- *     across connections, which is unsafe with connection pools).
- *   - claimJob: single-statement atomic UPDATE; only one node wins per QUEUED row.
- *   - updateStatus: never overwrites a STOPPED status (preserves the operator's stop signal).
- *   - heartbeat: drives the reaper.
- */
+// Status literals match Constants.java; hardcoded in SQL for readability.
 @Repository
 public class JobDao {
 
@@ -36,7 +25,7 @@ public class JobDao {
         KeyHolder kh = new GeneratedKeyHolder();
         jdbc.update(con -> {
             PreparedStatement ps = con.prepareStatement(
-                    "INSERT INTO lseg_jobs (status, business_date, input_dir) VALUES ('" + STATUS_QUEUED + "', ?, ?)",
+                    "INSERT INTO lseg_jobs (status, business_date, input_dir) VALUES ('QUEUED', ?, ?)",
                     Statement.RETURN_GENERATED_KEYS);
             ps.setString(1, businessDate);
             ps.setString(2, inputDir);
@@ -56,13 +45,13 @@ public class JobDao {
         // We do this in two steps but the UPDATE itself is the source of truth: only one node
         // sees rowsAffected == 1 for any given id.
         List<Long> candidates = jdbc.queryForList(
-                "SELECT id FROM lseg_jobs WHERE status = '" + STATUS_QUEUED + "' ORDER BY id ASC LIMIT 1", Long.class);
+                "SELECT id FROM lseg_jobs WHERE status = 'QUEUED' ORDER BY id ASC LIMIT 1", Long.class);
         if (candidates.isEmpty()) return Optional.empty();
         long id = candidates.get(0);
         int updated = jdbc.update(
-                "UPDATE lseg_jobs SET status='" + STATUS_RUNNING + "', node_id=?, started_at=CURRENT_TIMESTAMP, " +
+                "UPDATE lseg_jobs SET status='RUNNING', node_id=?, started_at=CURRENT_TIMESTAMP, " +
                         "last_heartbeat_at=CURRENT_TIMESTAMP " +
-                        "WHERE id=? AND status='" + STATUS_QUEUED + "'", nodeId, id);
+                        "WHERE id=? AND status='QUEUED'", nodeId, id);
         return updated > 0 ? Optional.of(id) : Optional.empty();
     }
 
@@ -73,15 +62,25 @@ public class JobDao {
     public void updateStatus(long jobId, String status, String error) {
         jdbc.update(
                 "UPDATE lseg_jobs SET " +
-                        "status = CASE WHEN status = '" + STATUS_STOPPED + "' THEN '" + STATUS_STOPPED + "' ELSE ? END, " +
-                        "finished_at = CASE WHEN ? IN ('" + STATUS_COMPLETED + "','" + STATUS_FAILED + "','" + STATUS_STOPPED + "') THEN CURRENT_TIMESTAMP ELSE finished_at END, " +
-                        "error_message = CASE WHEN status = '" + STATUS_STOPPED + "' THEN error_message ELSE ? END " +
+                        "status = CASE WHEN status = 'STOPPED' THEN 'STOPPED' ELSE ? END, " +
+                        "finished_at = CASE WHEN ? IN ('COMPLETED','FAILED','STOPPED') THEN CURRENT_TIMESTAMP ELSE finished_at END, " +
+                        "error_message = CASE WHEN status = 'STOPPED' THEN error_message ELSE ? END " +
                         "WHERE id = ?",
                 status, status, error, jobId);
     }
 
+    /**
+     * Unconditionally requeue a job regardless of its current status.
+     * Use this for restarting STOPPED jobs where updateStatus() would be a no-op.
+     */
+    public void forceRequeue(long jobId) {
+        jdbc.update(
+                "UPDATE lseg_jobs SET status='QUEUED', finished_at=NULL, error_message=NULL WHERE id=?",
+                jobId);
+    }
+
     public void heartbeat(long jobId) {
-        jdbc.update("UPDATE lseg_jobs SET last_heartbeat_at = CURRENT_TIMESTAMP WHERE id = ? AND status = '" + STATUS_RUNNING + "'", jobId);
+        jdbc.update("UPDATE lseg_jobs SET last_heartbeat_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'RUNNING'", jobId);
     }
 
     public String getStatus(long jobId) {
@@ -99,7 +98,7 @@ public class JobDao {
     public boolean isStopped(long jobId) {
         try {
             String status = getStatus(jobId);
-            return STATUS_STOPPED.equals(status);
+            return "STOPPED".equals(status);
         } catch (Exception e) {
             // If we can't read status, treat as not-stopped to avoid false-positive aborts.
             return false;
@@ -107,21 +106,21 @@ public class JobDao {
     }
 
     public void forceStopAll() {
-        jdbc.update("UPDATE lseg_jobs SET status = '" + STATUS_STOPPED + "', finished_at = CURRENT_TIMESTAMP " +
-                "WHERE status IN ('" + STATUS_RUNNING + "', '" + STATUS_QUEUED + "')");
+        jdbc.update("UPDATE lseg_jobs SET status = 'STOPPED', finished_at = CURRENT_TIMESTAMP " +
+                "WHERE status IN ('RUNNING', 'QUEUED')");
     }
 
     public void forceStop(long jobId) {
-        jdbc.update("UPDATE lseg_jobs SET status='" + STATUS_STOPPED + "', finished_at=CURRENT_TIMESTAMP " +
-                "WHERE id=? AND status IN ('" + STATUS_RUNNING + "','" + STATUS_QUEUED + "')", jobId);
+        jdbc.update("UPDATE lseg_jobs SET status='STOPPED', finished_at=CURRENT_TIMESTAMP " +
+                "WHERE id=? AND status IN ('RUNNING','QUEUED')", jobId);
     }
 
     /** Reap RUNNING jobs whose last heartbeat is older than `staleSeconds`. */
     public int reapStale(long staleSeconds) {
         return jdbc.update(
-                "UPDATE lseg_jobs SET status='" + STATUS_FAILED + "', finished_at=CURRENT_TIMESTAMP, " +
+                "UPDATE lseg_jobs SET status='FAILED', finished_at=CURRENT_TIMESTAMP, " +
                         "error_message=CONCAT('reaped: heartbeat stale > ', ?, 's') " +
-                        "WHERE status='" + STATUS_RUNNING + "' AND last_heartbeat_at < (NOW() - INTERVAL ? SECOND)",
+                        "WHERE status='RUNNING' AND last_heartbeat_at < (NOW() - INTERVAL ? SECOND)",
                 staleSeconds, staleSeconds);
     }
 }

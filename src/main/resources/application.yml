@@ -21,6 +21,8 @@ ingest:
     - "*.note.txt.zip"
     - "Reference-INT-EQUI-*"
   ricCaretFilter: true
+  auditLookbackDays: 60           # load audit records within this window for idempotency checks
+  maxBusinessDateAgeDays: 30      # reject jobs with business date older than this
   threads:
     intPerTable: 10
     deltaTargetsParallel: 3
@@ -28,9 +30,6 @@ ingest:
   batch:
     upsertSize: 5000
     deleteSize: 5000
-  resilience:
-    fallbackOnBatchFail: true
-    maxSkippedRowsPerFile: 1000
   cancel:
     checkRows: 5000              # poll stop signal every N rows inside a file
   reaper:
@@ -61,3 +60,12 @@ logging:
   level:
     root: INFO
     com.lseg.ingest: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,info
+  endpoint:
+    metrics:
+      enabled: true

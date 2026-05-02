@@ -4,6 +4,35 @@ All notable changes to the LSEG Ingestion project will be documented in this fil
 
 ## [1.1.0] - 2026-05-02
 
+### Resilience & Correctness Fixes
+- **Business date age guard**: Jobs whose `business_date` is older than `ingest.maxBusinessDateAgeDays` (default 30) now fail fast before any file scanning, preventing accidental processing of stale feeds.
+- **Bounded audit lookback**: `loadSuccessFileNames` now accepts a `lookbackDays` parameter and filters by `business_date >= CURDATE() - INTERVAL N DAY` (configured via `ingest.auditLookbackDays`, default 60). Eliminates unbounded full-table scans as audit history grows.
+- **Reconciliation deadlock fix**: The NULL-asset deduplication `DELETE` in `FileIngestor` is now wrapped in `SqlRetry`, preventing entire-file rollbacks when parallel quote ingestion triggers a MariaDB deadlock.
+- **Final flush order corrected**: The end-of-file batch flush in `FileIngestor` now flushes the active side first (`deleter` when last action was DELETE, `upserter` otherwise), preserving in-file action ordering semantics.
+- **Dead `skipped` variable removed**: The always-zero `skipped` counter in `FileIngestor` was removed; error skip counts now read correctly from `upserter.skipped() + deleter.skipped()` in both success and failure audit paths.
+- **`perTargetPool` shutdown moved to `finally`**: The per-job target thread pool is now shut down in a `finally` block, preventing thread leaks when exceptions occur mid-run.
+
+### API Fixes
+- **`restart()` now works for STOPPED jobs**: `POST /api/jobs/restart` previously used `updateStatus()` which silently no-ops for STOPPED jobs. It now calls `forceRequeue()` (a new unconditional UPDATE) for STOPPED jobs and returns the actual resulting DB status instead of a hardcoded `QUEUED` claim.
+
+### Code Quality
+- **`FileIngestor.ingestWithParser()` decomposed**: The 200-line god method is split into `buildColumnMapping()`, `processRows()`, and `reconcileNullAssets()` private methods, each with a focused responsibility.
+- **SQL status literals**: Concatenated Java constant strings in `JobDao` and `FileAuditDao` SQL queries replaced with literal values (`'QUEUED'`, `'STARTED'`, etc.) for clarity.
+- **`Resilience` config block removed**: `IngestProperties.Resilience` (containing never-wired `fallbackOnBatchFail` and `maxSkippedRowsPerFile`) was removed entirely to eliminate dead configuration.
+- **PRICING Kind.INT documented**: Added comment in `FileScanner.classify()` explaining that PRICING files are always `Kind.INT` by design.
+
+### Configuration Changes
+| Key | Default | Description |
+|---|---|---|
+| `ingest.auditLookbackDays` | `60` | Window (days) for idempotency audit lookback |
+| `ingest.maxBusinessDateAgeDays` | `30` | Maximum allowed age of a job's business date |
+
+Removed: `ingest.resilience.fallbackOnBatchFail`, `ingest.resilience.maxSkippedRowsPerFile`
+
+---
+
+### Previous 1.1.0 Changes
+
 ### Added
 - **Pricing Ingestion Support**:
     - Full support for `EIS_INT_*_PRICING` data files (`PRC` kind).

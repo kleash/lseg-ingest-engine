@@ -20,6 +20,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -34,18 +36,19 @@ import static com.lseg.ingest.Constants.*;
  * Flow:
  *   1. Acquire cluster GET_LOCK (strict one-at-a-time across the cluster).
  *   2. Start a heartbeat task that updates lseg_jobs.last_heartbeat_at.
- *   3. Scan + classify files; drop already-SUCCESSful files (audit table).
- *   4. Pre-ingest sanity check; failures get SKIPPED_SANITY.
- *   5. Phase 1 [parallel]: ORGS, ASSETS, QUOTES, DSS_BONDS — each runs INT files in
+ *   3. Validate business date is within the configured maxBusinessDateAgeDays window.
+ *   4. Scan + classify files; drop already-SUCCESSful files within auditLookbackDays.
+ *   5. Pre-ingest sanity check; failures get SKIPPED_SANITY.
+ *   6. Phase 1 [parallel]: ORGS, ASSETS, QUOTES, DSS_BONDS — each runs INT files in
  *      parallel then DELTA files sequentially. DELTA never runs while INT is in flight.
- *   6. Phase 2 [async]: PRICING files are submitted to a dedicated 3-thread background
+ *   7. Phase 2 [async]: PRICING files are submitted to a dedicated 3-thread background
  *      executor ({@code pricingExecutor}) and run() returns immediately. The cluster lock
  *      is released before PRICING starts, so new Phase 1 jobs can begin within seconds.
  *      {@code TargetIngestCompletedEvent(PRICING)} fires from the background thread when
  *      all pricing files finish — after the job row shows COMPLETED in lseg_jobs.
  *      Note: synchronous {@code @EventListener} handlers for PRICING events execute on a
  *      pricingExecutor thread; keep them fast or annotate with {@code @Async}.
- *   7. Cooperative stop: jobDao.isStopped(jobId) is polled at submit boundaries AND inside
+ *   8. Cooperative stop: jobDao.isStopped(jobId) is polled at submit boundaries AND inside
  *      the row loop, so a stop signal aborts within seconds, not minutes.
  */
 @Component
@@ -96,27 +99,20 @@ public class IngestOrchestrator {
 
     /** @return true if the run completed (success or failed); false if the cluster lock was unavailable. */
     public boolean run(long jobId) throws Exception {
-        // 1. Setup logging context so every log line shows the current Job ID.
         MDC.put(MDC_JOB_ID, String.valueOf(jobId));
         Timer.Sample overallSample = Timer.start(registry);
         ScheduledExecutorService heartbeat = null;
 
-        // 2. CONSTRAINT: Acquire a global database lock. 
-        // This ensures that even in a multi-instance cluster, only ONE node processes files at a time.
         try (ClusterLock.Handle lock = clusterLock.tryAcquire()) {
             if (!lock.acquired()) {
                 log.warn("Cluster lock unavailable; another node is running. Leaving job {} QUEUED.", jobId);
-                // Roll job back to QUEUED so it's re-tried on next poll.
                 jobDao.updateStatus(jobId, STATUS_QUEUED, null);
                 return false;
             }
 
-            // 3. Start a background heartbeat. 
-            // If this node crashes, the heartbeat stops, allowing the JobReaper to eventually unlock the job.
             heartbeat = startHeartbeat(jobId);
             checkStop(jobId);
 
-            // 4. Retrieve job's stored values (Date and Input Directory).
             String businessDate = jobDao.getBusinessDate(jobId);
             String jobDir = jobDao.getInputDir(jobId);
             String effectiveInputDir = (jobDir != null && !jobDir.isEmpty())
@@ -125,30 +121,31 @@ public class IngestOrchestrator {
                 log.info("Job {} inputDir={} overrides config inputDir={}", jobId, effectiveInputDir, props.getInputDir());
             }
 
-            // 5. Look at the folder and parse file names into Java objects.
+            // Reject jobs whose business date is too old to prevent processing stale data.
+            LocalDate bd = FileAuditDao.parseBusinessDate(businessDate);
+            long ageDays = ChronoUnit.DAYS.between(bd, LocalDate.now());
+            if (ageDays > props.getMaxBusinessDateAgeDays()) {
+                throw new IllegalStateException(String.format(
+                        "Business date %s is %d days old (max allowed: %d). Failing fast.",
+                        businessDate, ageDays, props.getMaxBusinessDateAgeDays()));
+            }
+
             List<IngestFile> all = scanner.scan(effectiveInputDir);
-            
-            // 6. VALIDATION/IDEMPOTENCY: Query the database to find files we've already successfully finished.
-            Set<String> alreadyDone = audit.loadSuccessFileNames();
-            Set<String> staleSuccess = audit.loadStaleSuccessFileNames(30);
+
+            // Load only SUCCESS records within the audit lookback window — avoids a full table scan
+            // as the audit table grows over time. Files outside the window are re-ingested (idempotent).
+            Set<String> alreadyDone = audit.loadSuccessFileNames(props.getAuditLookbackDays());
             List<IngestFile> remaining = new ArrayList<>(all.size());
-            int staleReIngestCount = 0;
             for (IngestFile f : all) {
                 if (alreadyDone.contains(f.fileName())) {
                     log.debug("Skipping already-ingested file {}", f.fileName());
                 } else {
-                    if (staleSuccess.contains(f.fileName())) {
-                        staleReIngestCount++;
-                        log.warn("Re-ingesting stale file (SUCCESS older than 30 days): {}", f.fileName());
-                    }
                     remaining.add(f);
                 }
             }
-            log.info("Production Status - Files: total={} already-ingested={} remaining={} stale-re-ingest={}",
-                    all.size(), all.size() - remaining.size(), remaining.size(), staleReIngestCount);
+            log.info("Files: total={} already-ingested={} remaining={}",
+                    all.size(), all.size() - remaining.size(), remaining.size());
 
-            // 7. SANITY CHECK: Before doing expensive database work, check the files.
-            // This reads the first 50 lines looking for the correct headers.
             List<IngestFile> good = new ArrayList<>(remaining.size());
             for (IngestFile f : remaining) {
                 checkStop(jobId);
@@ -161,13 +158,10 @@ public class IngestOrchestrator {
                     good.add(f);
                 }
             }
-            
-            // 8. Organizes the healthy files into an IngestPlan (sorting by Target and Sequence).
+
             IngestPlan plan = new IngestPlan(good);
             log.info("Ingestion Plan built: {}", plan.summary());
 
-            // 9. PARALLEL EXECUTION: Phase 1 — ORGS, ASSETS, QUOTES, DSS_BONDS run in parallel.
-            //    Phase 2 — PRICING runs last (lowest priority) after all Phase 1 targets complete.
             ExecutorService perTargetPool = Executors.newFixedThreadPool(
                     Math.max(1, props.getThreads().getDeltaTargetsParallel()),
                     daemonThreads("target"));
@@ -178,21 +172,26 @@ public class IngestOrchestrator {
                 phase1Futures.add(perTargetPool.submit(() -> runTarget(t, plan, jobId, businessDate)));
             }
 
-            // 10. Wait for all Phase 1 pipelines to finish.
             boolean anyTargetError = false;
-            for (Future<?> f : phase1Futures) {
-                try {
-                    waitWithHeartbeat(f, jobId, "target pipeline");
-                } catch (ExecutionException e) {
-                    anyTargetError = true;
-                    log.error("Target pipeline failed unexpectedly", e.getCause());
-                    registry.counter(METRIC_TARGET_ERRORS).increment();
+            try {
+                for (Future<?> f : phase1Futures) {
+                    try {
+                        waitWithHeartbeat(f, jobId, "target pipeline");
+                    } catch (ExecutionException e) {
+                        anyTargetError = true;
+                        log.error("Target pipeline failed unexpectedly", e.getCause());
+                        registry.counter(METRIC_TARGET_ERRORS).increment();
+                    }
+                }
+            } finally {
+                perTargetPool.shutdown();
+                if (!perTargetPool.awaitTermination(2, TimeUnit.MINUTES)) {
+                    perTargetPool.shutdownNow();
                 }
             }
 
-            // 11. Phase 2 — PRICING submitted to dedicated background executor.
-            // The cluster lock is released after run() returns, allowing the next
-            // ORGS/ASSETS/QUOTES job to start immediately without waiting for pricing to finish.
+            // PRICING files are always Kind.INT — the LSEG pricing feed has no delta variant.
+            // plan.deltaFor(Target.PRICING) is always empty by design.
             if (!jobDao.isStopped(jobId)) {
                 submitPricingAsync(plan, jobId, businessDate);
             } else {
@@ -200,14 +199,9 @@ public class IngestOrchestrator {
                         new TargetIngestCompletedEvent(Target.PRICING, businessDate, jobId, false, 0));
             }
 
-            perTargetPool.shutdown();
-            if (!perTargetPool.awaitTermination(2, TimeUnit.MINUTES)) {
-                perTargetPool.shutdownNow();
-            }
-
             if (jobDao.isStopped(jobId)) {
                 log.warn("Job {} ended via STOP signal", jobId);
-                return false; // return false so JobWorker doesn't flip STOPPED to COMPLETED
+                return false;
             }
             if (anyTargetError) {
                 throw new RuntimeException("One or more target pipelines failed");

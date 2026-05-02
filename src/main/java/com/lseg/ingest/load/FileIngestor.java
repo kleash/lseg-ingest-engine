@@ -63,6 +63,22 @@ public class FileIngestor {
         this.registry = registry;
     }
 
+    // ── Column mapping resolved from the file header ──────────────────────────
+
+    private record ColumnMapping(
+            List<TargetSchema.Column> cols,
+            int[] srcIndex,
+            int[] keySrcIdx,
+            int actionIdx,
+            int ricIdx,
+            boolean applyRicFilter) {}
+
+    // ── Row-loop statistics returned to the coordinator ───────────────────────
+
+    private record RowStats(int parsed, int insCount, int updCount, int delCount, int filterSkips) {}
+
+    // ── Public entry point ────────────────────────────────────────────────────
+
     public void ingest(IngestFile file, long jobId, String businessDate) throws Exception {
         MDC.put(MDC_FILE, file.fileName());
         MDC.put(MDC_JOB_ID, String.valueOf(jobId));
@@ -95,202 +111,218 @@ public class FileIngestor {
         }
     }
 
+    // ── Coordinator ───────────────────────────────────────────────────────────
+
     private void ingestWithParser(FileParser parser, IngestFile file, long jobId, String businessDate) throws Exception {
         parser.initialize(50);
         FileParser.Metadata md = parser.metadata();
         int declared = md != null ? md.declaredRows() : -1;
         audit.markStarted(file, businessDate, declared);
 
-        Set<String> headerSet = new HashSet<>(parser.headerColumns());
-        List<TargetSchema.Column> cols = TargetSchema.intersect(file.target(), headerSet);
-        if (cols.isEmpty()) {
+        ColumnMapping cm = buildColumnMapping(parser, file);
+        if (cm == null) {
             String msg = "No overlapping columns found. File headers: " + parser.headerColumns()
                     + ". Expected for " + file.target() + ": " + TargetSchema.schemaSummary(file.target());
             log.error("ABORT {}: {}", file.fileName(), msg);
             audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, truncate(msg));
             return;
         }
-        log.info("Mapped {}/{} columns for {}", cols.size(), TargetSchema.columnsFor(file.target()).size(), file.fileName());
+        log.info("Mapped {}/{} columns for {}", cm.cols().size(), TargetSchema.columnsFor(file.target()).size(), file.fileName());
 
-        Map<String, Integer> headerIdx = parser.headerIndex();
-            int[] srcIndex = new int[cols.size()];
-            for (int i = 0; i < cols.size(); i++) {
-                srcIndex[i] = headerIdx.get(cols.get(i).sourceHeader());
-            }
+        String upsertSql = SqlBuilder.upsert(file.target(), cm.cols());
+        String deleteSql = SqlBuilder.delete(file.target());
+        String errorMessage = null;
 
-            // Precompute row-side indices for the unique-key source headers (in declared order).
-            Target target = file.target();
-            int[] keySrcIdx = new int[target.uniqueKeySourceHeaders.size()];
-            for (int i = 0; i < keySrcIdx.length; i++) {
-                keySrcIdx[i] = headerIdx.getOrDefault(target.uniqueKeySourceHeaders.get(i), -1);
-            }
+        try (Connection conn = ds.getConnection()) {
+            conn.setAutoCommit(false);
 
-            int actionIdx = headerIdx.getOrDefault(COL_ACTION, -1);
-            int ricIdx = headerIdx.getOrDefault(COL_RIC, -1);
-            boolean applyRicFilter = props.isRicCaretFilter()
-                    && file.kind() == Kind.INT
-                    && target == Target.QUOTES
-                    && ricIdx >= 0;
-            RicCaretFilter ricFilter = new RicCaretFilter(ricIdx);
-
-            String upsertSql = SqlBuilder.upsert(target, cols);
-            String deleteSql = SqlBuilder.delete(target);
-
-            int parsed = 0, skipped = 0, filterSkips = 0;
-            int insCount = 0, updCount = 0, delCount = 0;
-            String errorMessage = null;
-            int cancelCheckEvery = Math.max(1, props.getCancel().getCheckRows());
-
-            try (Connection conn = ds.getConnection()) {
-                conn.setAutoCommit(false);
-
-                ResilientBatchExecutor.RowBinder upsertBinder = (ps, row) -> {
-                    String[] v = row.values();
-                    for (int i = 0; i < cols.size(); i++) {
-                        cols.get(i).binder().bind(ps, i + 1, v[i]);
-                    }
-                };
-
-                ResilientBatchExecutor.RowBinder deleteBinder = (ps, row) -> {
-                    String[] v = row.values();
-                    for (int i = 0; i < v.length; i++) {
-                        if (v[i] == null || v[i].isEmpty()) ps.setNull(i + 1, java.sql.Types.VARCHAR);
-                        else ps.setString(i + 1, v[i]);
-                    }
-                };
-
-                try (ResilientBatchExecutor upserter = new ResilientBatchExecutor(
-                             conn, upsertSql, upsertBinder, props.getBatch().getUpsertSize(), file.fileName(), props.getRetry());
-                     ResilientBatchExecutor deleter = new ResilientBatchExecutor(
-                             conn, deleteSql, deleteBinder, props.getBatch().getDeleteSize(), file.fileName(), props.getRetry())) {
-
-                    // 'U' -> upsert, 'D' -> delete. Track current batch side so we flush on flip.
-                    char activeSide = 0; // 0=none, 'U'=upsert, 'D'=delete
-
-                    // 5. Read the file line by line until the end.
-                    // The parser handles transparent ZIP decompression and pipe-splitting.
-                    String[] row;
-                    while ((row = parser.nextRow()) != null) {
-                        parsed++;
-
-                        // 6. Check for stop signal.
-                        // We poll the database every N rows to see if a human operator requested a STOP.
-                        if ((parsed % cancelCheckEvery) == 0) {
-                            if (jobDao.isStopped(jobId)) {
-                                throw new InterruptedException("Stop signaled mid-file at row " + parsed);
-                            }
-                            log.info("Progress: parsed={}, inserted={}, skipped={}, filterSkips={} for {}",
-                                    parsed, (upserter.succeeded() + deleter.succeeded()), (upserter.skipped() + deleter.skipped()), filterSkips, file.fileName());
-                        }
-
-                        // 7. Apply RIC Caret Filter.
-                        // Some feeds contain internal records marked with '^' which we must ignore.
-                        if (applyRicFilter && ricFilter.shouldSkip(row)) {
-                            filterSkips++;
-                            continue;
-                        }
-
-                        // 8. Determine Action (Insert/Update vs Delete).
-                        // Reference data uses 'I', 'U', or 'D'. We default to 'I' if unknown.
-                        String actionStr = (actionIdx >= 0 && actionIdx < row.length && row[actionIdx] != null && !row[actionIdx].isEmpty())
-                                ? row[actionIdx] : ACTION_INSERT;
-                        char action = actionStr.charAt(0);
-
-                        // Key value for logging/mapping.
-                        String firstKey = (keySrcIdx.length > 0 && keySrcIdx[0] >= 0 && keySrcIdx[0] < row.length)
-                                ? row[keySrcIdx[0]] : null;
-
-                        if (action == ACTION_DELETE.charAt(0)) {
-                            // 9. Process Delete.
-                            // If the previous row was an Upsert, we must flush the database buffer now.
-                            if (activeSide == 'U') {
-                                upserter.flush();
-                                activeSide = 0;
-                            }
-                            delCount++;
-                            String[] keyVals = new String[keySrcIdx.length];
-                            for (int k = 0; k < keySrcIdx.length; k++) {
-                                int idx = keySrcIdx[k];
-                                keyVals[k] = (idx >= 0 && idx < row.length) ? row[idx] : null;
-                            }
-                            deleter.add(new PendingRow(keyVals, parser.currentLine(), firstKey));
-                            activeSide = 'D';
-                        } else {
-                            // 10. Process Upsert (Insert or Update).
-                            if (action == ACTION_UPDATE.charAt(0)) updCount++; else insCount++;
-
-                            // If the previous row was a Delete, flush that buffer first to preserve order.
-                            if (activeSide == 'D') {
-                                deleter.flush();
-                                activeSide = 0;
-                            }
-                            String[] vals = new String[cols.size()];
-                            for (int i = 0; i < cols.size(); i++) {
-                                int idx = srcIndex[i];
-                                vals[i] = (idx >= 0 && idx < row.length) ? row[idx] : null;
-                            }
-                            upserter.add(new PendingRow(vals, parser.currentLine(), firstKey));
-                            activeSide = 'U';
-                        }
-                    }
-
-                    // 11. Final Flush.
-                    // Send any remaining rows in the buffers to the database.
-                    if (activeSide == 'D') {
-                        upserter.flush();
-                        deleter.flush();
-                    } else {
-                        deleter.flush();
-                        upserter.flush();
-                    }
-
-                    // 11b. Reconciliation: NULL yields to Asset.
-                    // If a quote was previously (or just now) linked to NULL, but an anchored
-                    // (non-NULL asset_id) record exists for the same quote_id, remove the NULL record.
-                    if (target == Target.QUOTES) {
-                        try (java.sql.Statement stmt = conn.createStatement()) {
-                            int reconciled = stmt.executeUpdate(
-                                    "DELETE q1 FROM lseg_quotes q1 " +
-                                            "JOIN lseg_quotes q2 ON q1.quote_id = q2.quote_id " +
-                                            "WHERE q1.asset_id IS NULL AND q2.asset_id IS NOT NULL"
-                            );
-                            if (reconciled > 0) {
-                                log.info("Reconciled {} NULL-asset duplicates for {}", reconciled, file.fileName());
-                            }
-                        }
-                    }
-
-                    // 12. Commit.
-                    // Actually finalize the transaction in MariaDB.
-                    conn.commit();
-
-                    int inserted = upserter.succeeded();
-                    int deleted = deleter.succeeded();
-                    int errorSkips = skipped + upserter.skipped() + deleter.skipped();
-                    int totalSkipped = errorSkips + filterSkips;
-
-                    String t = target.name();
-                    registry.counter(METRIC_ROWS_PARSED, TAG_TARGET, t).increment(parsed);
-                    registry.counter(METRIC_ROWS_INSERTED, TAG_TARGET, t).increment(inserted + deleted);
-                    registry.counter(METRIC_ROWS_SKIPPED_ERROR, TAG_TARGET, t).increment(errorSkips);
-                    registry.counter(METRIC_ROWS_SKIPPED_FILTER, TAG_TARGET, t).increment(filterSkips);
-                    registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_INSERT).increment(insCount);
-                    registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_UPDATE).increment(updCount);
-                    registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_DELETE).increment(delCount);
-
-                    audit.markFinished(file, AUDIT_SUCCESS, parsed, inserted + deleted, totalSkipped, insCount, updCount, delCount, null);
-                    log.info("FINISHED {}: parsed={} inserted={} ins={} upd={} del={} error_skips={} filter_skips={} declared={}",
-                            file.fileName(), parsed, inserted + deleted, insCount, updCount, delCount, errorSkips, filterSkips, declared);
-
-                } catch (Exception e) {
-                    conn.rollback();
-                    errorMessage = e.getClass().getSimpleName() + ": " + e.getMessage();
-                    log.error("TERMINATED {}: {}. Transaction rolled back.", file.fileName(), errorMessage);
-                    audit.markFinished(file, AUDIT_FAILED, parsed, 0, skipped + filterSkips, insCount, updCount, delCount, truncate(errorMessage));
-                    throw e;
+            ResilientBatchExecutor.RowBinder upsertBinder = (ps, row) -> {
+                String[] v = row.values();
+                for (int i = 0; i < cm.cols().size(); i++) {
+                    cm.cols().get(i).binder().bind(ps, i + 1, v[i]);
                 }
+            };
+
+            ResilientBatchExecutor.RowBinder deleteBinder = (ps, row) -> {
+                String[] v = row.values();
+                for (int i = 0; i < v.length; i++) {
+                    if (v[i] == null || v[i].isEmpty()) ps.setNull(i + 1, java.sql.Types.VARCHAR);
+                    else ps.setString(i + 1, v[i]);
+                }
+            };
+
+            try (ResilientBatchExecutor upserter = new ResilientBatchExecutor(
+                         conn, upsertSql, upsertBinder, props.getBatch().getUpsertSize(), file.fileName(), props.getRetry(), props.getBatch().getMaxSkippedRowsPerFile());
+                 ResilientBatchExecutor deleter = new ResilientBatchExecutor(
+                         conn, deleteSql, deleteBinder, props.getBatch().getDeleteSize(), file.fileName(), props.getRetry(), props.getBatch().getMaxSkippedRowsPerFile())) {
+
+                RowStats stats = processRows(parser, cm, upserter, deleter, file, jobId);
+
+                if (file.target() == Target.QUOTES) {
+                    int reconciled = reconcileNullAssets(conn, file);
+                    if (reconciled > 0) {
+                        log.info("Reconciled {} NULL-asset duplicates for {}", reconciled, file.fileName());
+                    }
+                }
+
+                conn.commit();
+
+                int inserted = upserter.succeeded();
+                int deleted = deleter.succeeded();
+                int errorSkips = upserter.skipped() + deleter.skipped();
+                int totalSkipped = errorSkips + stats.filterSkips();
+                String t = file.target().name();
+
+                registry.counter(METRIC_ROWS_PARSED, TAG_TARGET, t).increment(stats.parsed());
+                registry.counter(METRIC_ROWS_INSERTED, TAG_TARGET, t).increment(inserted + deleted);
+                registry.counter(METRIC_ROWS_SKIPPED_ERROR, TAG_TARGET, t).increment(errorSkips);
+                registry.counter(METRIC_ROWS_SKIPPED_FILTER, TAG_TARGET, t).increment(stats.filterSkips());
+                registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_INSERT).increment(stats.insCount());
+                registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_UPDATE).increment(stats.updCount());
+                registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_DELETE).increment(stats.delCount());
+
+                audit.markFinished(file, AUDIT_SUCCESS, stats.parsed(), inserted + deleted, totalSkipped,
+                        stats.insCount(), stats.updCount(), stats.delCount(), null);
+                log.info("FINISHED {}: parsed={} inserted={} ins={} upd={} del={} error_skips={} filter_skips={} declared={}",
+                        file.fileName(), stats.parsed(), inserted + deleted, stats.insCount(),
+                        stats.updCount(), stats.delCount(), errorSkips, stats.filterSkips(), declared);
+
+            } catch (Exception e) {
+                conn.rollback();
+                errorMessage = e.getClass().getSimpleName() + ": " + e.getMessage();
+                log.error("TERMINATED {}: {}. Transaction rolled back.", file.fileName(), errorMessage);
+                audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, truncate(errorMessage));
+                throw e;
             }
         }
+    }
+
+    // ── Column mapping ────────────────────────────────────────────────────────
+
+    private ColumnMapping buildColumnMapping(FileParser parser, IngestFile file) {
+        Set<String> headerSet = new HashSet<>(parser.headerColumns());
+        List<TargetSchema.Column> cols = TargetSchema.intersect(file.target(), headerSet);
+        if (cols.isEmpty()) return null;
+
+        Map<String, Integer> headerIdx = parser.headerIndex();
+        int[] srcIndex = new int[cols.size()];
+        for (int i = 0; i < cols.size(); i++) {
+            srcIndex[i] = headerIdx.get(cols.get(i).sourceHeader());
+        }
+
+        Target target = file.target();
+        int[] keySrcIdx = new int[target.uniqueKeySourceHeaders.size()];
+        for (int i = 0; i < keySrcIdx.length; i++) {
+            keySrcIdx[i] = headerIdx.getOrDefault(target.uniqueKeySourceHeaders.get(i), -1);
+        }
+
+        int actionIdx = headerIdx.getOrDefault(COL_ACTION, -1);
+        int ricIdx = headerIdx.getOrDefault(COL_RIC, -1);
+        boolean applyRicFilter = props.isRicCaretFilter()
+                && file.kind() == Kind.INT
+                && target == Target.QUOTES
+                && ricIdx >= 0;
+
+        return new ColumnMapping(cols, srcIndex, keySrcIdx, actionIdx, ricIdx, applyRicFilter);
+    }
+
+    // ── Row processing loop ───────────────────────────────────────────────────
+
+    private RowStats processRows(FileParser parser, ColumnMapping cm,
+                                 ResilientBatchExecutor upserter, ResilientBatchExecutor deleter,
+                                 IngestFile file, long jobId) throws Exception {
+        RicCaretFilter ricFilter = new RicCaretFilter(cm.ricIdx());
+        int parsed = 0, filterSkips = 0, insCount = 0, updCount = 0, delCount = 0;
+        int cancelCheckEvery = Math.max(1, props.getCancel().getCheckRows());
+        char activeSide = 0; // 0=none, 'U'=upsert, 'D'=delete
+
+        String[] row;
+        while ((row = parser.nextRow()) != null) {
+            parsed++;
+
+            if ((parsed % cancelCheckEvery) == 0) {
+                if (jobDao.isStopped(jobId)) {
+                    throw new InterruptedException("Stop signaled mid-file at row " + parsed);
+                }
+                log.info("Progress: parsed={}, inserted={}, skipped={}, filterSkips={} for {}",
+                        parsed, (upserter.succeeded() + deleter.succeeded()),
+                        (upserter.skipped() + deleter.skipped()), filterSkips, file.fileName());
+            }
+
+            if (cm.applyRicFilter() && ricFilter.shouldSkip(row)) {
+                filterSkips++;
+                continue;
+            }
+
+            String actionStr = (cm.actionIdx() >= 0 && cm.actionIdx() < row.length
+                    && row[cm.actionIdx()] != null && !row[cm.actionIdx()].isEmpty())
+                    ? row[cm.actionIdx()] : ACTION_INSERT;
+            char action = actionStr.charAt(0);
+
+            String firstKey = (cm.keySrcIdx().length > 0 && cm.keySrcIdx()[0] >= 0
+                    && cm.keySrcIdx()[0] < row.length) ? row[cm.keySrcIdx()[0]] : null;
+
+            if (action == ACTION_DELETE.charAt(0)) {
+                if (activeSide == 'U') {
+                    upserter.flush();
+                    activeSide = 0;
+                }
+                delCount++;
+                String[] keyVals = new String[cm.keySrcIdx().length];
+                for (int k = 0; k < cm.keySrcIdx().length; k++) {
+                    int idx = cm.keySrcIdx()[k];
+                    keyVals[k] = (idx >= 0 && idx < row.length) ? row[idx] : null;
+                }
+                deleter.add(new PendingRow(keyVals, parser.currentLine(), firstKey));
+                activeSide = 'D';
+            } else {
+                if (action == ACTION_UPDATE.charAt(0)) updCount++; else insCount++;
+                if (activeSide == 'D') {
+                    deleter.flush();
+                    activeSide = 0;
+                }
+                String[] vals = new String[cm.cols().size()];
+                for (int i = 0; i < cm.cols().size(); i++) {
+                    int idx = cm.srcIndex()[i];
+                    vals[i] = (idx >= 0 && idx < row.length) ? row[idx] : null;
+                }
+                upserter.add(new PendingRow(vals, parser.currentLine(), firstKey));
+                activeSide = 'U';
+            }
+        }
+
+        // Final flush — active side first to preserve in-file ordering semantics
+        if (activeSide == 'D') {
+            deleter.flush();
+            upserter.flush();
+        } else {
+            upserter.flush();
+            deleter.flush();
+        }
+
+        return new RowStats(parsed, insCount, updCount, delCount, filterSkips);
+    }
+
+    // ── Reconciliation ────────────────────────────────────────────────────────
+
+    /**
+     * Removes NULL-asset duplicate quotes: if a quote_id has both a NULL-asset_id row and a
+     * non-NULL-asset_id row, the NULL row is deleted. Wrapped in SqlRetry to handle deadlocks
+     * that can occur when concurrent quote files are processed in parallel.
+     */
+    private int reconcileNullAssets(Connection conn, IngestFile file) throws Exception {
+        try (java.sql.Statement stmt = conn.createStatement()) {
+            return SqlRetry.withRetry(props.getRetry(), "reconcile:" + file.fileName(), () ->
+                    stmt.executeUpdate(
+                            "DELETE q1 FROM lseg_quotes q1 " +
+                            "JOIN lseg_quotes q2 ON q1.quote_id = q2.quote_id " +
+                            "WHERE q1.asset_id IS NULL AND q2.asset_id IS NOT NULL"
+                    )
+            );
+        }
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
 
     private static String truncate(String s) {
         if (s == null) return null;

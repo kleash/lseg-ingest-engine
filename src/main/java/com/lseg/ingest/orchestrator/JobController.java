@@ -2,7 +2,6 @@ package com.lseg.ingest.orchestrator;
 
 import com.lseg.ingest.audit.JobDao;
 import com.lseg.ingest.config.IngestProperties;
-import org.apache.coyote.BadRequestException;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -50,10 +49,19 @@ public class JobController {
         return Map.of("scope", "single", "jobId", jobId, "message", "Stop signal sent");
     }
 
+    /**
+     * Re-queue a job for re-processing. Works for any terminal status including STOPPED.
+     * Returns the actual resulting status read back from the database.
+     */
     @PostMapping("/restart")
     public Map<String, Object> restart(@RequestParam Long jobId) {
-        jobDao.updateStatus(jobId, STATUS_QUEUED, null);
-        return Map.of("jobId", jobId, "status", STATUS_QUEUED);
+        String current = jobDao.getStatus(jobId);
+        if (STATUS_STOPPED.equals(current)) {
+            jobDao.forceRequeue(jobId);
+        } else {
+            jobDao.updateStatus(jobId, STATUS_QUEUED, null);
+        }
+        return Map.of("jobId", jobId, "status", jobDao.getStatus(jobId));
     }
 
     @GetMapping("/status")

@@ -34,18 +34,20 @@ public class ResilientBatchExecutor implements AutoCloseable {
     private final List<PendingRow> buffered = new ArrayList<>();
     private final String fileName;
     private final IngestProperties.Retry retryCfg;
+    private final int maxSkippedRows;
 
     private int succeeded;
     private int skipped;
 
     public ResilientBatchExecutor(Connection conn, String sql, RowBinder binder, int flushAt, 
-                                  String fileName, IngestProperties.Retry retryCfg) throws SQLException {
+                                  String fileName, IngestProperties.Retry retryCfg, int maxSkippedRows) throws SQLException {
         this.conn = conn;
         this.ps = conn.prepareStatement(sql);
         this.binder = binder;
         this.flushAt = flushAt;
         this.fileName = fileName;
         this.retryCfg = retryCfg;
+        this.maxSkippedRows = maxSkippedRows;
     }
 
     /** Bind one row from raw header-aligned String values. */
@@ -91,10 +93,15 @@ public class ResilientBatchExecutor implements AutoCloseable {
                 } catch (Exception rowEx) {
                     // 4. POISON ROW IMMUNITY: This specific row is completely broken (e.g., data too large).
                     // We log the exact line number, key, and data so it can be fixed manually, 
-                    // but we DO NOT stop the entire file.
+                    // but we DO NOT stop the entire file UNLESS the threshold is exceeded.
                     skipped++;
                     log.error("ROW FAILURE in {} line={} key={}. REASON: {}. DATA: {}", 
                             fileName, row.lineNumber(), row.keyValue(), rowEx.getMessage(), Arrays.toString(row.values()));
+                    if (skipped > maxSkippedRows) {
+                        throw new RuntimeException(String.format(
+                                "maxSkippedRowsPerFile exceeded (%d > %d) for %s. Aborting file.",
+                                skipped, maxSkippedRows, fileName));
+                    }
                 }
             }
         } finally {

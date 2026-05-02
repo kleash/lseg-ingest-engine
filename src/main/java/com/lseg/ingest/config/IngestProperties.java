@@ -12,9 +12,10 @@ public class IngestProperties {
     private String charset = "UTF-8";
     private List<String> skipPatterns;
     private boolean ricCaretFilter = true;
+    private int auditLookbackDays = 60;
+    private int maxBusinessDateAgeDays = 30;
     private Threads threads = new Threads();
     private Batch batch = new Batch();
-    private Resilience resilience = new Resilience();
     private Cancel cancel = new Cancel();
     private Reaper reaper = new Reaper();
     private Cluster cluster = new Cluster();
@@ -31,12 +32,14 @@ public class IngestProperties {
     public void setSkipPatterns(List<String> v) { this.skipPatterns = v; }
     public boolean isRicCaretFilter() { return ricCaretFilter; }
     public void setRicCaretFilter(boolean v) { this.ricCaretFilter = v; }
+    public int getAuditLookbackDays() { return auditLookbackDays; }
+    public void setAuditLookbackDays(int v) { this.auditLookbackDays = v; }
+    public int getMaxBusinessDateAgeDays() { return maxBusinessDateAgeDays; }
+    public void setMaxBusinessDateAgeDays(int v) { this.maxBusinessDateAgeDays = v; }
     public Threads getThreads() { return threads; }
     public void setThreads(Threads v) { this.threads = v; }
     public Batch getBatch() { return batch; }
     public void setBatch(Batch v) { this.batch = v; }
-    public Resilience getResilience() { return resilience; }
-    public void setResilience(Resilience v) { this.resilience = v; }
     public Cancel getCancel() { return cancel; }
     public void setCancel(Cancel v) { this.cancel = v; }
     public Reaper getReaper() { return reaper; }
@@ -61,17 +64,11 @@ public class IngestProperties {
     public static class Batch {
         private int upsertSize = 5000;
         private int deleteSize = 5000;
+        private int maxSkippedRowsPerFile = 1000;
         public int getUpsertSize() { return upsertSize; }
         public void setUpsertSize(int v) { this.upsertSize = v; }
         public int getDeleteSize() { return deleteSize; }
         public void setDeleteSize(int v) { this.deleteSize = v; }
-    }
-
-    public static class Resilience {
-        private boolean fallbackOnBatchFail = true;
-        private int maxSkippedRowsPerFile = 1000;
-        public boolean isFallbackOnBatchFail() { return fallbackOnBatchFail; }
-        public void setFallbackOnBatchFail(boolean v) { this.fallbackOnBatchFail = v; }
         public int getMaxSkippedRowsPerFile() { return maxSkippedRowsPerFile; }
         public void setMaxSkippedRowsPerFile(int v) { this.maxSkippedRowsPerFile = v; }
     }

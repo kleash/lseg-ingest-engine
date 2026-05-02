@@ -110,4 +110,15 @@ class FileScannerTest {
                 "EIS_INT_US_PRICING.PRC.25DA1.20260430.1.1.note.txt.zip"));
     }
 
+    @Test
+    void pricingFilesAreAlwaysKindInt() {
+        // All PRICING files must produce Kind.INT — there is no PRICING delta format in the LSEG delivery.
+        assertEquals(Kind.INT, scanner.classify(Path.of("/x"),
+                "EIS_INT_US_PRICING.PRC.25DA1.20260430.1.1.1.1.txt.zip").kind());
+        assertEquals(Kind.INT, scanner.classify(Path.of("/x"),
+                "EIS_INT_EU_PRICING.PRC.25DA0.20260430.10.16.1.1.txt.zip").kind());
+        assertEquals(Kind.INT, scanner.classify(Path.of("/x"),
+                "EIS_INT_ASIA_PRICING.PRC.25D9F.20260430.96.120.1.1.txt.zip").kind());
+    }
+
 }
