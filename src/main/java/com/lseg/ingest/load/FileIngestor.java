@@ -124,7 +124,7 @@ public class FileIngestor {
             String msg = "No overlapping columns found. File headers: " + parser.headerColumns()
                     + ". Expected for " + file.target() + ": " + TargetSchema.schemaSummary(file.target());
             log.error("ABORT {}: {}", file.fileName(), msg);
-            audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, truncate(msg));
+            audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, 0, 0, truncate(msg));
             return;
         }
         log.info("Mapped {}/{} columns for {}", cm.cols().size(), TargetSchema.columnsFor(file.target()).size(), file.fileName());
@@ -158,40 +158,35 @@ public class FileIngestor {
 
                 RowStats stats = processRows(parser, cm, upserter, deleter, file, jobId);
 
-                if (file.target() == Target.QUOTES) {
-                    int reconciled = reconcileNullAssets(conn, file);
-                    if (reconciled > 0) {
-                        log.info("Reconciled {} NULL-asset duplicates for {}", reconciled, file.fileName());
-                    }
-                }
-
                 conn.commit();
 
-                int inserted = upserter.succeeded();
-                int deleted = deleter.succeeded();
+                int insTotal = upserter.inserted() + deleter.inserted();
+                int updTotal = upserter.updated() + deleter.updated();
+                int unchangedTotal = upserter.unchanged() + deleter.unchanged();
                 int errorSkips = upserter.skipped() + deleter.skipped();
                 int totalSkipped = errorSkips + stats.filterSkips();
                 String t = file.target().name();
 
                 registry.counter(METRIC_ROWS_PARSED, TAG_TARGET, t).increment(stats.parsed());
-                registry.counter(METRIC_ROWS_INSERTED, TAG_TARGET, t).increment(inserted + deleted);
+                registry.counter(METRIC_ROWS_INSERTED, TAG_TARGET, t).increment(insTotal);
+                registry.counter(METRIC_ROWS_UPDATED, TAG_TARGET, t).increment(updTotal);
                 registry.counter(METRIC_ROWS_SKIPPED_ERROR, TAG_TARGET, t).increment(errorSkips);
                 registry.counter(METRIC_ROWS_SKIPPED_FILTER, TAG_TARGET, t).increment(stats.filterSkips());
                 registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_INSERT).increment(stats.insCount());
                 registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_UPDATE).increment(stats.updCount());
                 registry.counter(METRIC_ROWS_OPS, TAG_TARGET, t, TAG_OP, ACTION_DELETE).increment(stats.delCount());
 
-                audit.markFinished(file, AUDIT_SUCCESS, stats.parsed(), inserted + deleted, totalSkipped,
+                audit.markFinished(file, AUDIT_SUCCESS, stats.parsed(), insTotal, updTotal, unchangedTotal, totalSkipped,
                         stats.insCount(), stats.updCount(), stats.delCount(), null);
-                log.info("FINISHED {}: parsed={} inserted={} ins={} upd={} del={} error_skips={} filter_skips={} declared={}",
-                        file.fileName(), stats.parsed(), inserted + deleted, stats.insCount(),
+                log.info("FINISHED {}: parsed={} inserted={} updated={} unchanged={} ins={} upd={} del={} error_skips={} filter_skips={} declared={}",
+                        file.fileName(), stats.parsed(), insTotal, updTotal, unchangedTotal, stats.insCount(),
                         stats.updCount(), stats.delCount(), errorSkips, stats.filterSkips(), declared);
 
             } catch (Exception e) {
                 conn.rollback();
                 errorMessage = e.getClass().getSimpleName() + ": " + e.getMessage();
                 log.error("TERMINATED {}: {}. Transaction rolled back.", file.fileName(), errorMessage);
-                audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, truncate(errorMessage));
+                audit.markFinished(file, AUDIT_FAILED, 0, 0, 0, 0, 0, 0, 0, 0, truncate(errorMessage));
                 throw e;
             }
         }
@@ -244,8 +239,10 @@ public class FileIngestor {
                 if (jobDao.isStopped(jobId)) {
                     throw new InterruptedException("Stop signaled mid-file at row " + parsed);
                 }
-                log.info("Progress: parsed={}, inserted={}, skipped={}, filterSkips={} for {}",
-                        parsed, (upserter.succeeded() + deleter.succeeded()),
+                log.info("Progress: parsed={}, inserted={}, updated={}, unchanged={}, skipped={}, filterSkips={} for {}",
+                        parsed, (upserter.inserted() + deleter.inserted()),
+                        (upserter.updated() + deleter.updated()),
+                        (upserter.unchanged() + deleter.unchanged()),
                         (upserter.skipped() + deleter.skipped()), filterSkips, file.fileName());
             }
 
@@ -301,25 +298,6 @@ public class FileIngestor {
         }
 
         return new RowStats(parsed, insCount, updCount, delCount, filterSkips);
-    }
-
-    // ── Reconciliation ────────────────────────────────────────────────────────
-
-    /**
-     * Removes NULL-asset duplicate quotes: if a quote_id has both a NULL-asset_id row and a
-     * non-NULL-asset_id row, the NULL row is deleted. Wrapped in SqlRetry to handle deadlocks
-     * that can occur when concurrent quote files are processed in parallel.
-     */
-    private int reconcileNullAssets(Connection conn, IngestFile file) throws Exception {
-        try (java.sql.Statement stmt = conn.createStatement()) {
-            return SqlRetry.withRetry(props.getRetry(), "reconcile:" + file.fileName(), () ->
-                    stmt.executeUpdate(
-                            "DELETE q1 FROM lseg_quotes q1 " +
-                            "JOIN lseg_quotes q2 ON q1.quote_id = q2.quote_id " +
-                            "WHERE q1.asset_id IS NULL AND q2.asset_id IS NOT NULL"
-                    )
-            );
-        }
     }
 
     // ── Utilities ─────────────────────────────────────────────────────────────

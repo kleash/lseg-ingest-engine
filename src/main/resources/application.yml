@@ -24,12 +24,12 @@ ingest:
   auditLookbackDays: 60           # load audit records within this window for idempotency checks
   maxBusinessDateAgeDays: 30      # reject jobs with business date older than this
   threads:
-    intPerTable: 10
+    intPerTable: 5
     deltaTargetsParallel: 3
     pricing-threads: 3
   batch:
-    upsertSize: 5000
-    deleteSize: 5000
+    upsertSize: 2000
+    deleteSize: 2000
   cancel:
     checkRows: 5000              # poll stop signal every N rows inside a file
   reaper:
@@ -40,9 +40,9 @@ ingest:
     lockName: ${CLUSTER_LOCK_NAME:lseg-ingest-cluster}
     heartbeatIntervalSeconds: 30
   retry:
-    maxAttempts: 3
-    initialDelayMs: 250
-    maxDelayMs: 5000
+    maxAttempts: 10
+    initialDelayMs: 500
+    maxDelayMs: 10000
 
 db:
   runtime:
@@ -50,7 +50,7 @@ db:
     user: ${DB_USER:ingest}
     password: ${DB_PASSWORD:ingestpw}
     pool:
-      maxSize: 40
+      maxSize: 50
       minIdle: 10
       connectionTimeoutMs: 30000
 

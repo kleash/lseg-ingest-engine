@@ -48,6 +48,7 @@ public final class Constants {
     public static final String METRIC_ARCHIVE_ERRORS = "ingest.archive.errors";
     public static final String METRIC_ROWS_PARSED = "ingest.rows.parsed";
     public static final String METRIC_ROWS_INSERTED = "ingest.rows.inserted";
+    public static final String METRIC_ROWS_UPDATED = "ingest.rows.updated";
     public static final String METRIC_ROWS_SKIPPED_ERROR = "ingest.rows.skipped.error";
     public static final String METRIC_ROWS_SKIPPED_FILTER = "ingest.rows.skipped.filter";
     public static final String METRIC_ROWS_OPS = "ingest.rows.ops";

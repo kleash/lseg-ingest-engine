@@ -59,6 +59,8 @@ class FileAuditDaoTest {
                 error_message TEXT,
                 parsed_rows INT,
                 inserted_rows INT,
+                updated_rows INT DEFAULT 0,
+                unchanged_rows INT DEFAULT 0,
                 skipped_rows INT,
                 ins_count INT DEFAULT 0,
                 upd_count INT DEFAULT 0,
@@ -109,7 +111,7 @@ class FileAuditDaoTest {
         String status = jdbc.queryForObject("SELECT status FROM lseg_file_audit WHERE file_name=?", String.class, "test.zip");
         assertEquals("STARTED", status);
 
-        dao.markFinished(f, "SUCCESS", 1000, 999, 1, 500, 499, 0, null);
+        dao.markFinished(f, "SUCCESS", 1000, 900, 99, 0, 1, 500, 499, 0, null);
         status = jdbc.queryForObject("SELECT status FROM lseg_file_audit WHERE file_name=?", String.class, "test.zip");
         assertEquals("SUCCESS", status);
     }

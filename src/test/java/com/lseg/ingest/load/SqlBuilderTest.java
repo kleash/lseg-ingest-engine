@@ -29,10 +29,10 @@ class SqlBuilderTest {
 
     @Test
     void deleteIsKeyedOnUniqueKeyColumns() {
-        assertEquals("UPDATE lseg_orgs SET is_deleted = 1 WHERE entity_id = ?", SqlBuilder.delete(Target.ORGS));
-        assertEquals("UPDATE lseg_assets SET is_deleted = 1 WHERE asset_id = ?", SqlBuilder.delete(Target.ASSETS));
-        assertEquals("UPDATE lseg_quotes SET is_deleted = 1 WHERE asset_id = ? AND quote_id = ?", SqlBuilder.delete(Target.QUOTES));
-        assertEquals("UPDATE lseg_dss_bonds SET is_deleted = 1 WHERE isin = ? AND instrument_id = ? AND instrument_id_type = ? AND ric = ?", SqlBuilder.delete(Target.DSS_BONDS));
+        assertEquals("UPDATE lseg_orgs SET is_deleted = 1 WHERE entity_id <=> ?", SqlBuilder.delete(Target.ORGS));
+        assertEquals("UPDATE lseg_assets SET is_deleted = 1 WHERE asset_id <=> ?", SqlBuilder.delete(Target.ASSETS));
+        assertEquals("UPDATE lseg_quotes SET is_deleted = 1 WHERE asset_id <=> ? AND quote_id <=> ?", SqlBuilder.delete(Target.QUOTES));
+        assertEquals("UPDATE lseg_dss_bonds SET is_deleted = 1 WHERE isin <=> ? AND instrument_id <=> ? AND instrument_id_type <=> ? AND ric <=> ?", SqlBuilder.delete(Target.DSS_BONDS));
     }
 
     @Test

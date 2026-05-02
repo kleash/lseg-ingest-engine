@@ -1,6 +1,6 @@
 -- liquibase formatted sql
 
--- changeset lseg-ingest:009-fix-quotes-null-duplicates
+-- changeset lseg-ingest:009-fix-quotes-null-duplicates runOnChange:false
 -- Description: Prevent multiple NULL asset_ids for the same quote using a virtual column.
 
 -- 1. Deduplicate: If multiple rows have NULL asset_id for the same quote_id, keep only the latest.
@@ -15,7 +15,7 @@ JOIN (
 WHERE q1.asset_id IS NULL AND q1.id < q2.max_id;
 
 -- 2. Add virtual column to treat NULL as an empty string for uniqueness purposes.
-ALTER TABLE lseg_quotes ADD COLUMN asset_id_v 
+ALTER TABLE lseg_quotes ADD COLUMN asset_id_v
     VARCHAR(255) AS (IFNULL(asset_id, '')) VIRTUAL;
 
 -- 3. Replace the loose composite index with a strict one using the virtual column.

@@ -32,7 +32,7 @@ class ResilientBatchExecutorTest {
         AtomicInteger bindCount = new AtomicInteger();
         ResilientBatchExecutor.RowBinder binder = (p, r) -> bindCount.incrementAndGet();
 
-        try (ResilientBatchExecutor executor = new ResilientBatchExecutor(conn, "INSERT...", binder, 2, "test.zip", retryCfg)) {
+        try (ResilientBatchExecutor executor = new ResilientBatchExecutor(conn, "INSERT...", binder, 2, "test.zip", retryCfg, 1000)) {
             executor.add(new PendingRow(new String[]{"a"}, 1, "k1"));
             executor.add(new PendingRow(new String[]{"b"}, 2, "k2")); // should trigger flush
             
@@ -63,7 +63,7 @@ class ResilientBatchExecutorTest {
 
         ResilientBatchExecutor.RowBinder binder = (p, r) -> {};
 
-        try (ResilientBatchExecutor executor = new ResilientBatchExecutor(conn, "INSERT...", binder, 2, "test.zip", retryCfg)) {
+        try (ResilientBatchExecutor executor = new ResilientBatchExecutor(conn, "INSERT...", binder, 2, "test.zip", retryCfg, 1000)) {
             executor.add(new PendingRow(new String[]{"a"}, 1, "k1"));
             executor.add(new PendingRow(new String[]{"b"}, 2, "k2")); // triggers flush
             
@@ -92,7 +92,7 @@ class ResilientBatchExecutorTest {
 
         ResilientBatchExecutor.RowBinder binder = (p, r) -> {};
 
-        try (ResilientBatchExecutor executor = new ResilientBatchExecutor(conn, "INSERT...", binder, 2, "test.zip", retryCfg)) {
+        try (ResilientBatchExecutor executor = new ResilientBatchExecutor(conn, "INSERT...", binder, 2, "test.zip", retryCfg, 1000)) {
             executor.add(new PendingRow(new String[]{"a"}, 1, "k1"));
             executor.add(new PendingRow(new String[]{"b"}, 2, "k2")); // triggers flush
             

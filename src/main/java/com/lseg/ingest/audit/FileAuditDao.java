@@ -37,7 +37,7 @@ public class FileAuditDao {
                         "VALUES (?, ?, ?, ?, ?, ?, ?, 'STARTED', ?) " +
                         "ON DUPLICATE KEY UPDATE dataset=VALUES(dataset), target_table=VALUES(target_table), kind=VALUES(kind), seq=VALUES(seq), " +
                         "business_date=VALUES(business_date), declared_rows=VALUES(declared_rows), status='STARTED', started_at=VALUES(started_at), " +
-                        "finished_at=NULL, error_message=NULL, parsed_rows=NULL, inserted_rows=NULL, skipped_rows=NULL, " +
+                        "finished_at=NULL, error_message=NULL, parsed_rows=NULL, inserted_rows=NULL, updated_rows=NULL, unchanged_rows=NULL, skipped_rows=NULL, " +
                         "ins_count=0, upd_count=0, del_count=0",
                 f.fileName(),
                 f.dataset(),
@@ -49,12 +49,12 @@ public class FileAuditDao {
                 new Timestamp(System.currentTimeMillis()));
     }
 
-    public void markFinished(IngestFile f, String status, int parsed, int inserted, int skipped,
+    public void markFinished(IngestFile f, String status, int parsed, int inserted, int updated, int unchanged, int skipped,
                              int ins, int upd, int del, String errorMessage) {
         jdbc.update(
-                "UPDATE lseg_file_audit SET status=?, parsed_rows=?, inserted_rows=?, skipped_rows=?, " +
+                "UPDATE lseg_file_audit SET status=?, parsed_rows=?, inserted_rows=?, updated_rows=?, unchanged_rows=?, skipped_rows=?, " +
                         "ins_count=?, upd_count=?, del_count=?, error_message=?, finished_at=? WHERE file_name=?",
-                status, parsed, inserted, skipped, ins, upd, del, errorMessage, new Timestamp(System.currentTimeMillis()), f.fileName());
+                status, parsed, inserted, updated, unchanged, skipped, ins, upd, del, errorMessage, new Timestamp(System.currentTimeMillis()), f.fileName());
     }
 
     public static LocalDate parseBusinessDate(String yyyymmdd) {

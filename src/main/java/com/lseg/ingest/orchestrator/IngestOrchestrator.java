@@ -5,6 +5,7 @@ import com.lseg.ingest.audit.JobDao;
 import com.lseg.ingest.config.IngestProperties;
 import com.lseg.ingest.event.TargetIngestCompletedEvent;
 import com.lseg.ingest.load.FileIngestor;
+import com.lseg.ingest.load.SqlRetry;
 import com.lseg.ingest.plan.*;
 import com.lseg.ingest.sanity.FileSanityCheck;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -16,10 +17,13 @@ import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
+import javax.sql.DataSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -56,6 +60,7 @@ public class IngestOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(IngestOrchestrator.class);
 
+    private final DataSource ds;
     private final FileScanner scanner;
     private final FileSanityCheck sanity;
     private final FileAuditDao audit;
@@ -67,9 +72,10 @@ public class IngestOrchestrator {
     private final ApplicationEventPublisher eventPublisher;
     private final ExecutorService pricingExecutor;
 
-    public IngestOrchestrator(FileScanner scanner, FileSanityCheck sanity, FileAuditDao audit, JobDao jobDao,
+    public IngestOrchestrator(DataSource ds, FileScanner scanner, FileSanityCheck sanity, FileAuditDao audit, JobDao jobDao,
                               FileIngestor ingestor, IngestProperties props, MeterRegistry registry,
                               ClusterLock clusterLock, ApplicationEventPublisher eventPublisher) {
+        this.ds = ds;
         this.scanner = scanner;
         this.sanity = sanity;
         this.audit = audit;
@@ -289,6 +295,11 @@ public class IngestOrchestrator {
             runIntPhase(t, plan.intFor(t), jobId, businessDate);
             checkStop(jobId);
             runDeltaPhase(t, plan.deltaFor(t), jobId, businessDate);
+
+            if (t == Target.QUOTES) {
+                reconcileQuotes(jobId);
+            }
+
             success = true;
         } catch (Exception e) {
             log.error("Pipeline for {} aborted with error", t, e);
@@ -297,6 +308,23 @@ public class IngestOrchestrator {
             log.info("Target pipeline for {} finished (success={}, files={})", t, success, fileCount);
             eventPublisher.publishEvent(
                     new TargetIngestCompletedEvent(t, businessDate, jobId, success, fileCount));
+        }
+    }
+
+    private void reconcileQuotes(long jobId) throws Exception {
+        log.info("Starting NULL-asset reconciliation for QUOTES (job={})", jobId);
+        try (Connection conn = ds.getConnection();
+             Statement stmt = conn.createStatement()) {
+            int deleted = SqlRetry.withRetry(props.getRetry(), "reconcileQuotes", () ->
+                    stmt.executeUpdate(
+                            "DELETE q1 FROM lseg_quotes q1 " +
+                            "JOIN lseg_quotes q2 ON q1.quote_id = q2.quote_id " +
+                            "WHERE q1.asset_id IS NULL AND q2.asset_id IS NOT NULL"
+                    )
+            );
+            if (deleted > 0) {
+                log.info("Reconciled {} NULL-asset duplicates for QUOTES", deleted);
+            }
         }
     }
 
@@ -378,7 +406,7 @@ public class IngestOrchestrator {
     }
 
     private void archive(IngestFile f) {
-        if (props.getArchiveDir() == null) return;
+        if (props.getArchiveDir() == null || props.getArchiveDir().isBlank()) return;
         try {
             Path archivePath = Paths.get(props.getArchiveDir());
             if (!Files.exists(archivePath)) {

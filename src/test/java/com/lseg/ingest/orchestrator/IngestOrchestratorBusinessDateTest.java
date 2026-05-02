@@ -11,6 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 
+import javax.sql.DataSource;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 
@@ -26,12 +27,14 @@ class IngestOrchestratorBusinessDateTest {
     private FileAuditDao audit;
     private IngestOrchestrator orchestrator;
     private IngestProperties props;
+    private DataSource ds;
 
     @BeforeEach
     void setUp() {
         jobDao = mock(JobDao.class);
         scanner = mock(FileScanner.class);
         audit = mock(FileAuditDao.class);
+        ds = mock(DataSource.class);
 
         props = new IngestProperties();
         props.setInputDir("/tmp/input");
@@ -39,6 +42,7 @@ class IngestOrchestratorBusinessDateTest {
         props.setAuditLookbackDays(60);
 
         orchestrator = new IngestOrchestrator(
+                ds,
                 scanner,
                 mock(FileSanityCheck.class),
                 audit,

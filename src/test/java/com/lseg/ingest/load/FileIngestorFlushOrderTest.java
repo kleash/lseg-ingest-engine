@@ -27,13 +27,13 @@ class FileIngestorFlushOrderTest {
         var order = new java.util.ArrayList<String>();
 
         // Two executors — track which one flushed first via executeUpdate counts
-        var deleter = new ResilientBatchExecutor(conn, "DELETE SQL", (s, r) -> {}, 100, "test.zip", retryCfg) {
+        var deleter = new ResilientBatchExecutor(conn, "DELETE SQL", (s, r) -> {}, 100, "test.zip", retryCfg, 1000) {
             @Override public void flush() throws SQLException {
                 order.add("DELETE");
                 super.flush();
             }
         };
-        var upserter = new ResilientBatchExecutor(conn, "UPSERT SQL", (s, r) -> {}, 100, "test.zip", retryCfg) {
+        var upserter = new ResilientBatchExecutor(conn, "UPSERT SQL", (s, r) -> {}, 100, "test.zip", retryCfg, 1000) {
             @Override public void flush() throws SQLException {
                 order.add("UPSERT");
                 super.flush();
@@ -62,13 +62,13 @@ class FileIngestorFlushOrderTest {
 
         var order = new java.util.ArrayList<String>();
 
-        var deleter = new ResilientBatchExecutor(conn, "DELETE SQL", (s, r) -> {}, 100, "test.zip", retryCfg) {
+        var deleter = new ResilientBatchExecutor(conn, "DELETE SQL", (s, r) -> {}, 100, "test.zip", retryCfg, 1000) {
             @Override public void flush() throws SQLException {
                 order.add("DELETE");
                 super.flush();
             }
         };
-        var upserter = new ResilientBatchExecutor(conn, "UPSERT SQL", (s, r) -> {}, 100, "test.zip", retryCfg) {
+        var upserter = new ResilientBatchExecutor(conn, "UPSERT SQL", (s, r) -> {}, 100, "test.zip", retryCfg, 1000) {
             @Override public void flush() throws SQLException {
                 order.add("UPSERT");
                 super.flush();

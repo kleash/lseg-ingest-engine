@@ -24,3 +24,4 @@ test-input/
 # Ad-hoc chaos / sabotage scripts kept locally, not committed
 # (Moved to tests/integration for tracking)
 tests/chaos/
+/lseg-datafiles/

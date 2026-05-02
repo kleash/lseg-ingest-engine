@@ -12,6 +12,7 @@
     <include file="db/changelog/sql/005-lseg_jobs.sql"/>
     <include file="db/changelog/sql/006-lseg_dss_bonds.sql"/>
     <include file="db/changelog/sql/007-lseg_pricing.sql"/>
+    <include file="db/changelog/sql/008-add-metrics-and-versioning.sql"/>
     <include file="db/changelog/sql/009-fix-quotes-null-duplicates.sql"/>
     <include file="db/changelog/sql/010-drop-bad-index.sql"/>
 
