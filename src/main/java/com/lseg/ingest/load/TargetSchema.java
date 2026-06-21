@@ -72,7 +72,10 @@ public class TargetSchema {
                 col("Security_Long_Description", "security_long_description", Types.VARCHAR, STRING),
                 col("Settlement_Type", "settlement_type", Types.VARCHAR, STRING)));
 
-        SCHEMAS.put(Target.QUOTES, List.of(
+        // QUOTES and QUOTES_DELISTED share the exact same column layout; bind the same list to both
+        // so they never drift. The delisted file carries a few extra trailing headers (MIC, Suspend_Flag,
+        // etc.) which intersect() drops, matching QUOTES behaviour.
+        List<Column> quoteColumns = List.of(
                 col("Asset_ID", "asset_id", Types.VARCHAR, STRING),
                 col("Entity_ID", "entity_id", Types.VARCHAR, STRING),
                 col("Entity_Perm_ID", "entity_perm_id", Types.VARCHAR, STRING),
@@ -95,7 +98,9 @@ public class TargetSchema {
                 col("Exercise_Begin_Date", "exercise_begin_date", Types.VARCHAR, STRING),
                 col("Expiration_Date", "expiration_date", Types.VARCHAR, STRING),
                 col("Security_Description", "security_description", Types.VARCHAR, STRING),
-                col("Warrant_Issue_Date", "warrant_issue_date", Types.VARCHAR, STRING)));
+                col("Warrant_Issue_Date", "warrant_issue_date", Types.VARCHAR, STRING));
+        SCHEMAS.put(Target.QUOTES, quoteColumns);
+        SCHEMAS.put(Target.QUOTES_DELISTED, quoteColumns);
 
         SCHEMAS.put(Target.PRICING, List.of(
                 col("Quote_ID",                    "quote_id",                    Types.VARCHAR, STRING),

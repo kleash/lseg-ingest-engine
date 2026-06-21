@@ -122,6 +122,10 @@ public class FileScanner {
         // ASSETS
         if (dataset.startsWith("EIS_INT_") && dataset.endsWith("_ASSETS")) return Target.ASSETS;
         if (dataset.equals("EIS_DELTA_GLOBAL_ASSETS")) return Target.ASSETS;
+        // QUOTES_DELISTED — delisted instruments (EIS_INTDELISTED_*_QUOTE). Must be matched before the
+        // QUOTES rules. Note these do NOT match startsWith("EIS_INT_") (char 7 is 'D'), so without this
+        // rule they fall through to null and are ignored. Only the DELISTED job ingests this target.
+        if (dataset.startsWith("EIS_INTDELISTED") && (dataset.endsWith("_QUOTE") || dataset.endsWith("_QUOTES"))) return Target.QUOTES_DELISTED;
         // QUOTES
         if (dataset.startsWith("EIS_INT_") && (dataset.endsWith("_QUOTE") || dataset.endsWith("_QUOTES"))) return Target.QUOTES;
         if (dataset.startsWith("EIS_DELTA_") && (dataset.endsWith("_QUOTE") || dataset.endsWith("_QUOTES"))) return Target.QUOTES;

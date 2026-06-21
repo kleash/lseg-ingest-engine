@@ -21,14 +21,15 @@ public class JobDao {
         this.jdbc = new JdbcTemplate(ds);
     }
 
-    public long queueJob(String businessDate, String inputDir) {
+    public long queueJob(String businessDate, String inputDir, String jobType) {
         KeyHolder kh = new GeneratedKeyHolder();
         jdbc.update(con -> {
             PreparedStatement ps = con.prepareStatement(
-                    "INSERT INTO lseg_jobs (status, business_date, input_dir) VALUES ('QUEUED', ?, ?)",
+                    "INSERT INTO lseg_jobs (status, business_date, input_dir, job_type) VALUES ('QUEUED', ?, ?, ?)",
                     Statement.RETURN_GENERATED_KEYS);
             ps.setString(1, businessDate);
             ps.setString(2, inputDir);
+            ps.setString(3, jobType);
             return ps;
         }, kh);
         Number id = kh.getKey();
@@ -93,6 +94,12 @@ public class JobDao {
 
     public String getInputDir(long jobId) {
         return jdbc.queryForObject("SELECT input_dir FROM lseg_jobs WHERE id = ?", String.class, jobId);
+    }
+
+    /** Returns the job type (MAIN/DELISTED). Defaults to MAIN if the column is NULL. */
+    public String getJobType(long jobId) {
+        String type = jdbc.queryForObject("SELECT job_type FROM lseg_jobs WHERE id = ?", String.class, jobId);
+        return (type == null || type.isEmpty()) ? "MAIN" : type;
     }
 
     public boolean isStopped(long jobId) {

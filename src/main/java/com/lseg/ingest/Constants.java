@@ -14,6 +14,11 @@ public final class Constants {
     public static final String STATUS_FAILED = "FAILED";
     public static final String STATUS_STOPPED = "STOPPED";
 
+    // Job Types — determines which targets the orchestrator runs for a job.
+    // MAIN runs every target except QUOTES_DELISTED; DELISTED runs only QUOTES_DELISTED.
+    public static final String JOB_TYPE_MAIN = "MAIN";
+    public static final String JOB_TYPE_DELISTED = "DELISTED";
+
     // File Audit Statuses
     public static final String AUDIT_STARTED = "STARTED";
     public static final String AUDIT_SUCCESS = "SUCCESS";

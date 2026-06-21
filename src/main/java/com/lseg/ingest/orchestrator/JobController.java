@@ -28,14 +28,21 @@ public class JobController {
 
     @PostMapping("/trigger")
     public Map<String, Object> trigger(@RequestParam(required = false) String businessDate,
-                                       @RequestParam(required = false) String inputDir) {
+                                       @RequestParam(required = false) String inputDir,
+                                       @RequestParam(required = false, defaultValue = JOB_TYPE_MAIN) String jobType) {
         if (businessDate == null || businessDate.isEmpty()){
             return Map.of("result", "failed, business date is required");
         }
 
+        String type = jobType.toUpperCase();
+        if (!JOB_TYPE_MAIN.equals(type) && !JOB_TYPE_DELISTED.equals(type)) {
+            return Map.of("result", "failed, jobType must be one of MAIN or DELISTED");
+        }
+
         String dir = (inputDir != null && !inputDir.isEmpty()) ? inputDir : props.getInputDir();
-        long jobId = jobDao.queueJob(businessDate, dir);
-        return Map.of("jobId", jobId, "status", STATUS_QUEUED, "businessDate", businessDate, "inputDir", dir);
+        long jobId = jobDao.queueJob(businessDate, dir, type);
+        return Map.of("jobId", jobId, "status", STATUS_QUEUED, "businessDate", businessDate,
+                "inputDir", dir, "jobType", type);
     }
 
     /** Stop one specific job by id. */
