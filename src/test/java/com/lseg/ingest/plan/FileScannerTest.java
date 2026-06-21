@@ -28,6 +28,24 @@ class FileScannerTest {
     }
 
     @Test
+    void classifiesDelistedQuoteFileToIsolatedTarget() {
+        IngestFile f = scanner.classify(Path.of("/x"),
+                "EIS_INTDELISTED_EU_WRNTS_QUOTE.INT.26693.20260621.1.1.1.txt.zip");
+        assertNotNull(f);
+        assertEquals(Target.QUOTES_DELISTED, f.target());
+        assertEquals(Kind.INT, f.kind());
+        assertEquals(1, f.seq());
+        assertEquals("EIS_INTDELISTED_EU_WRNTS_QUOTE", f.dataset());
+    }
+
+    @Test
+    void delistedDatasetDoesNotMatchPlainQuotes() {
+        // Guard the prefix boundary: a normal EIS_INT_*_QUOTE must still map to QUOTES, not QUOTES_DELISTED.
+        assertEquals(Target.QUOTES,
+                scanner.classify(Path.of("/x"), "EIS_INT_EU_WRNTS_QUOTE.INT.25963.20260621.1.1.1.txt.zip").target());
+    }
+
+    @Test
     void classifiesAssets() {
         assertEquals(Target.ASSETS,
                 scanner.classify(Path.of("/x"), "EIS_INT_GLOBAL_EQU_OPT_ASSETS.INT.25971.20260425.1.1.1.txt.zip").target());

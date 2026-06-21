@@ -15,5 +15,7 @@
     <include file="db/changelog/sql/008-add-metrics-and-versioning.sql"/>
     <include file="db/changelog/sql/009-fix-quotes-null-duplicates.sql"/>
     <include file="db/changelog/sql/010-drop-bad-index.sql"/>
+    <include file="db/changelog/sql/011-add-job-type.sql"/>
+    <include file="db/changelog/sql/012-lseg_quotes_delisted.sql"/>
 
 </databaseChangeLog>

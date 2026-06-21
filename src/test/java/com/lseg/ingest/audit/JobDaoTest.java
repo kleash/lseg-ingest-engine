@@ -50,6 +50,7 @@ class JobDaoTest {
                 status VARCHAR(20) NOT NULL,
                 business_date VARCHAR(10),
                 input_dir VARCHAR(500),
+                job_type VARCHAR(32) NOT NULL DEFAULT 'MAIN',
                 node_id VARCHAR(200),
                 started_at TIMESTAMP NULL,
                 finished_at TIMESTAMP NULL,
@@ -60,7 +61,7 @@ class JobDaoTest {
 
     @Test
     void forceRequeue_stoppedJob_transitionsToQueued() {
-        long id = jobDao.queueJob("20260430", "/tmp");
+        long id = jobDao.queueJob("20260430", "/tmp", JOB_TYPE_MAIN);
         jobDao.forceStop(id);
         assertEquals(STATUS_STOPPED, jobDao.getStatus(id));
 
@@ -71,7 +72,7 @@ class JobDaoTest {
 
     @Test
     void forceRequeue_clearsFinishedAtAndErrorMessage() {
-        long id = jobDao.queueJob("20260430", "/tmp");
+        long id = jobDao.queueJob("20260430", "/tmp", JOB_TYPE_MAIN);
         // Simulate a failed job
         jdbc.update("UPDATE lseg_jobs SET status='FAILED', finished_at=NOW(), error_message='boom' WHERE id=?", id);
 
@@ -88,7 +89,7 @@ class JobDaoTest {
 
     @Test
     void updateStatus_doesNotOverwriteStopped() {
-        long id = jobDao.queueJob("20260430", "/tmp");
+        long id = jobDao.queueJob("20260430", "/tmp", JOB_TYPE_MAIN);
         jobDao.forceStop(id);
         assertEquals(STATUS_STOPPED, jobDao.getStatus(id));
 
@@ -99,8 +100,17 @@ class JobDaoTest {
     }
 
     @Test
+    void queueJob_persistsJobType() {
+        long mainId = jobDao.queueJob("20260430", "/tmp", JOB_TYPE_MAIN);
+        long delistedId = jobDao.queueJob("20260430", "/tmp", JOB_TYPE_DELISTED);
+
+        assertEquals(JOB_TYPE_MAIN, jobDao.getJobType(mainId));
+        assertEquals(JOB_TYPE_DELISTED, jobDao.getJobType(delistedId));
+    }
+
+    @Test
     void forceRequeue_worksForCompletedJobToo() {
-        long id = jobDao.queueJob("20260430", "/tmp");
+        long id = jobDao.queueJob("20260430", "/tmp", JOB_TYPE_MAIN);
         jdbc.update("UPDATE lseg_jobs SET status='COMPLETED', finished_at=NOW() WHERE id=?", id);
 
         jobDao.forceRequeue(id);

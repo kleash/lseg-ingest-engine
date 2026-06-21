@@ -25,6 +25,11 @@ public enum Target {
     QUOTES("lseg_quotes",
             List.of("asset_id", "quote_id"),
             List.of("Asset_ID", "Quote_ID")),
+    // Delisted instruments. Same shape/keys as QUOTES but isolated to its own table;
+    // only the DELISTED job ingests these (see IngestOrchestrator job-type filtering).
+    QUOTES_DELISTED("lseg_quotes_delisted",
+            List.of("asset_id", "quote_id"),
+            List.of("Asset_ID", "Quote_ID")),
     DSS_BONDS("lseg_dss_bonds",
             List.of("isin", "instrument_id", "instrument_id_type", "ric"),
             List.of("ISIN", "Instrument ID", "Instrument ID Type", "RIC")),

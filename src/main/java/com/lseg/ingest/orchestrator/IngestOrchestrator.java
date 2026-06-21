@@ -27,6 +27,7 @@ import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -120,6 +121,9 @@ public class IngestOrchestrator {
             checkStop(jobId);
 
             String businessDate = jobDao.getBusinessDate(jobId);
+            String jobType = jobDao.getJobType(jobId);
+            Set<Target> allowed = targetsForJobType(jobType);
+            log.info("Job {} type={} runs targets={}", jobId, jobType, allowed);
             String jobDir = jobDao.getInputDir(jobId);
             String effectiveInputDir = (jobDir != null && !jobDir.isEmpty())
                     ? jobDir : props.getInputDir();
@@ -137,6 +141,10 @@ public class IngestOrchestrator {
             }
 
             List<IngestFile> all = scanner.scan(effectiveInputDir);
+
+            // Isolate by job type: MAIN never sees QUOTES_DELISTED files; DELISTED sees only those.
+            // Filtering here keeps sanity/audit and all downstream work limited to the relevant files.
+            all.removeIf(f -> !allowed.contains(f.target()));
 
             // Load only SUCCESS records within the audit lookback window — avoids a full table scan
             // as the audit table grows over time. Files outside the window are re-ingested (idempotent).
@@ -175,6 +183,7 @@ public class IngestOrchestrator {
             List<Future<?>> phase1Futures = new ArrayList<>();
             for (Target t : Target.values()) {
                 if (t == Target.PRICING) continue;
+                if (!allowed.contains(t)) continue;
                 phase1Futures.add(perTargetPool.submit(() -> runTarget(t, plan, jobId, businessDate)));
             }
 
@@ -197,8 +206,10 @@ public class IngestOrchestrator {
             }
 
             // PRICING files are always Kind.INT — the LSEG pricing feed has no delta variant.
-            // plan.deltaFor(Target.PRICING) is always empty by design.
-            if (!jobDao.isStopped(jobId)) {
+            // plan.deltaFor(Target.PRICING) is always empty by design. Only MAIN jobs run PRICING.
+            if (!allowed.contains(Target.PRICING)) {
+                log.info("Job {} type={} does not include PRICING; skipping pricing phase", jobId, jobType);
+            } else if (!jobDao.isStopped(jobId)) {
                 submitPricingAsync(plan, jobId, businessDate);
             } else {
                 eventPublisher.publishEvent(
@@ -223,6 +234,18 @@ public class IngestOrchestrator {
             log.info("Ingestion session finished for job {}.", jobId);
             MDC.remove(MDC_JOB_ID);
         }
+    }
+
+    /**
+     * Targets a job is allowed to ingest, based on its type.
+     * DELISTED runs only QUOTES_DELISTED in isolation; MAIN runs everything else (the delisted
+     * target is excluded so the main job ignores INTDELISTED files entirely).
+     */
+    private static Set<Target> targetsForJobType(String jobType) {
+        if (JOB_TYPE_DELISTED.equals(jobType)) {
+            return EnumSet.of(Target.QUOTES_DELISTED);
+        }
+        return EnumSet.complementOf(EnumSet.of(Target.QUOTES_DELISTED));
     }
 
     private void waitWithHeartbeat(Future<?> f, long jobId, String description) throws Exception {
